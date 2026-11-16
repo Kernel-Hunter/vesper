@@ -28,7 +28,7 @@ def serve(monkeypatch, routes: dict):
     """routes: URL prefix -> JSON body, or an exception to raise. Records the URLs asked for."""
     asked = []
 
-    def urlopen(req, timeout):
+    def urlopen(req, timeout, context=None):
         url = req.full_url if hasattr(req, "full_url") else req
         asked.append(url)
         for prefix, body in routes.items():
@@ -200,3 +200,35 @@ def test_terminal_chooser_shows_why_the_list_is_short(monkeypatch, capsys):
                                         ({"free": True}, "Free"), ({"free": True, "price_source": "local"}, "Local"), ({}, "")])
 def test_price_text(value, text):
     assert onboarding.model_price(value) == text
+
+
+def test_model_lists_check_certificates_with_certifi(monkeypatch):
+    """The packaged app has no usable system certificate list; without certifi every https list failed."""
+    import ssl
+    import urllib.request
+
+    import certifi
+
+    from vesper import providers
+
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, *a):
+            return b'{"data": []}'
+
+    def fake_urlopen(req, timeout=None, context=None):
+        seen["context"] = context
+        return Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert providers._http_json("https://example.invalid/models", {}, 5) == {"data": []}
+    ctx = seen["context"]
+    assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+    assert certifi.where()

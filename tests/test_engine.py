@@ -52,7 +52,7 @@ def test_list_models_custom_without_key(server, monkeypatch):
     prov = server.prov
     calls = []
 
-    def fake_urlopen(req, timeout):
+    def fake_urlopen(req, timeout, context=None):
         calls.append((req.full_url, req.headers))
         return _Resp(json.dumps({"data": [{"id": "my-model"}, {"id": "other"}]}).encode())
 

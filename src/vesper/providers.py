@@ -386,7 +386,11 @@ def _from_generic(item: dict) -> dict | None:
 
 
 def _http_json(url: str, headers: dict, timeout: float):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
+    from vesper.webtools import (
+        _tls,  # certifi's list: the packaged app has no usable system one
+    )
+
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout, context=_tls()) as resp:
         return json.load(resp)
 
 
