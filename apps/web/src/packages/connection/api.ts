@@ -1,3 +1,4 @@
+import type { Catalog } from '../ui-model-selection/catalog'
 import { SSEParser } from './sse'
 
 export interface Provider {
@@ -195,8 +196,8 @@ export const api = {
   state: async (): Promise<ServerState> => (await request('/api/state')).json(),
   settings: async (values: Record<string, unknown>): Promise<ServerState> =>
     (await request('/api/settings', { method: 'POST', json: values })).json(),
-  models: async (provider: string): Promise<string[]> =>
-    ((await (await request(`/api/models?provider=${encodeURIComponent(provider)}`)).json()) as { models: string[] }).models,
+  models: async (provider: string): Promise<Catalog> =>
+    (await request(`/api/models?provider=${encodeURIComponent(provider)}`)).json(),
   approve: async (id: string, answer: ApprovalAnswer): Promise<void> => {
     await request('/api/approve', { method: 'POST', json: { id, answer } })
   },

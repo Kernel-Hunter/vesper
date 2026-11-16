@@ -318,28 +318,232 @@ def agent_middleware(llm) -> list:
     return [AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")]
 
 
-def list_models(provider: str, timeout: float = 6.0) -> list[str]:
-    """Ask the provider which models it serves. Falls back to the built-in suggestions."""
-    p = PROVIDERS[provider]
-    fallback = list(p.suggestions) or ([p.chat_model] if p.chat_model else [])
-    if p.kind == "anthropic":
-        url, headers = "https://api.anthropic.com/v1/models", {"x-api-key": _key(p) or "", "anthropic-version": "2023-06-01"}
-    else:
-        base = _base_url(p) or "https://api.openai.com/v1"
-        url, headers = base.rstrip("/") + "/models", {"Authorization": f"Bearer {_key(p) or 'not-needed'}"}
-    custom_endpoint = p.id == "custom" and bool(_base_url(p))  # may not need a key
-    if p.id == "custom" and not custom_endpoint:
-        return fallback
-    if not p.local and not _key(p) and not custom_endpoint:
-        return fallback
+# Where a provider's own model list has no prices, the same model on OpenRouter gives the list
+# price (OpenRouter charges what the model's maker charges). Only exact id matches are used.
+PRICE_SOURCES = {"openai": "openai", "anthropic": "anthropic", "google": "google", "deepseek": "deepseek",
+                 "mistral": "mistralai", "xai": "x-ai", "moonshot": "moonshotai"}
+CATALOG_TIMEOUT = 20.0
+PRICE_LIST_TTL = 24 * 3600
+
+
+def _per_million(value) -> float | None:
+    """A price per token (OpenRouter sends strings) as dollars per million tokens. Negative means "varies"."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
-            data = json.load(resp)
-    except Exception:
-        return fallback
-    ids = sorted({m.get("id", "").removeprefix("models/") for m in data.get("data", data.get("models", []))} - {""})
-    ids = [m for m in ids if not any(word in m.lower() for word in NOT_CHAT)] or ids
-    return ids or fallback
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if price < 0 else round(price * 1_000_000, 6)
+
+
+def _model_key(model_id: str) -> str:
+    """claude-sonnet-4-5-20250929, anthropic/claude-sonnet-4.5 and models/x compare equal."""
+    key = model_id.lower().removeprefix("models/").split("/")[-1]
+    key = re.sub(r"(-\d{8}|-\d{4}-\d{2}-\d{2})$", "", key)
+    return key.replace(".", "-")
+
+
+def _price_fields(prompt, completion) -> dict:
+    price_in, price_out = _per_million(prompt), _per_million(completion)
+    free = None if price_in is None or price_out is None else price_in == 0 and price_out == 0
+    return {"input": price_in, "output": price_out, "free": free}
+
+
+def _from_openrouter(item: dict) -> dict | None:
+    arch = item.get("architecture") or {}
+    outputs = arch.get("output_modalities")
+    if outputs and "text" not in outputs:
+        return None  # image, audio or embedding models
+    params = item.get("supported_parameters")
+    pricing = item.get("pricing") or {}
+    return {"id": item["id"], "name": item.get("name") or "", "context": item.get("context_length"),
+            "tools": None if params is None else "tools" in params,
+            **_price_fields(pricing.get("prompt"), pricing.get("completion")), "price_source": "provider"}
+
+
+def _from_together(item: dict) -> dict | None:
+    if item.get("type") not in (None, "chat", "language", "code"):
+        return None
+    pricing = item.get("pricing") or {}
+    entry = {"id": item["id"], "name": item.get("display_name") or "", "context": item.get("context_length"),
+             "tools": None, "input": None, "output": None, "free": None, "price_source": None}
+    if "input" in pricing and "output" in pricing:  # Together prices per million tokens already
+        price_in, price_out = float(pricing["input"]), float(pricing["output"])
+        entry.update(input=price_in, output=price_out, free=price_in == 0 and price_out == 0, price_source="provider")
+    return entry
+
+
+def _from_generic(item: dict) -> dict | None:
+    model_id = str(item.get("id") or item.get("name") or "").removeprefix("models/")
+    if not model_id:
+        return None
+    caps = item.get("capabilities") if isinstance(item.get("capabilities"), dict) else {}
+    if caps.get("completion_chat") is False:  # Mistral marks models that cannot chat
+        return None
+    context = item.get("context_window") or item.get("context_length") or item.get("max_context_length")
+    tools = caps.get("function_calling") if "function_calling" in caps else None
+    return {"id": model_id, "name": item.get("display_name") or "", "context": context if isinstance(context, int) else None,
+            "tools": tools, "input": None, "output": None, "free": None, "price_source": None}
+
+
+def _http_json(url: str, headers: dict, timeout: float):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
+        return json.load(resp)
+
+
+def _friendly_fetch_error(p: Provider, exc: Exception, timeout: float) -> str:
+    code = getattr(exc, "code", None)
+    if code in (401, 403):
+        return f"{p.label} refused the API key (HTTP {code}). Check the key in Settings or with /key."
+    if code:
+        return f"{p.label} answered HTTP {code} when asked for its models."
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+        return f"{p.label} did not send its model list within {timeout:.0f} seconds."
+    if p.local:
+        return f"{p.label} is not running."
+    return f"Could not reach {p.label}: {str(exc)[:120]}"
+
+
+def _fetch_models(p: Provider, timeout: float) -> list[dict]:
+    if p.kind == "anthropic":
+        headers = {"x-api-key": _key(p) or "", "anthropic-version": "2023-06-01"}
+        models, after = [], ""
+        for _ in range(20):  # the list is paged
+            data = _http_json(f"https://api.anthropic.com/v1/models?limit=1000{after}", headers, timeout)
+            models += [{"id": m["id"], "name": m.get("display_name") or "", "context": None, "tools": True,
+                        "input": None, "output": None, "free": None, "price_source": None} for m in data.get("data", [])]
+            if not data.get("has_more") or not data.get("last_id"):
+                break
+            after = f"&after_id={data['last_id']}"
+        return models
+    base = (_base_url(p) or "https://api.openai.com/v1").rstrip("/")
+    data = _http_json(base + "/models", {"Authorization": f"Bearer {_key(p) or 'not-needed'}"}, timeout)
+    items = data if isinstance(data, list) else data.get("data", data.get("models", []))
+    parse = _from_openrouter if p.id == "openrouter" else _from_together if p.id == "together" else _from_generic
+    models = [m for m in (parse(i) for i in items if isinstance(i, dict) and (i.get("id") or i.get("name"))) if m]
+    if p.id not in ("openrouter", "together"):
+        chat = [m for m in models if not any(word in m["id"].lower() for word in NOT_CHAT)]
+        models = chat or models  # a list of nothing else is shown as it is
+    if p.local:
+        for m in models:
+            m.update(input=0.0, output=0.0, free=True, price_source="local")
+    return models
+
+
+def _cache_dir() -> Path:
+    return HOME / "cache"
+
+
+def _write_json(path: Path, value) -> None:
+    import tempfile
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # a cache only
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _public_prices(timeout: float) -> dict[str, dict]:
+    """OpenRouter's public price list (no key needed), kept for a day. {model key: price fields}."""
+    import time
+
+    path = _cache_dir() / "openrouter-prices.json"
+    cached = _read_json(path)
+    if not isinstance(cached, dict) or time.time() - cached.get("at", 0) > PRICE_LIST_TTL:
+        try:
+            data = _http_json("https://openrouter.ai/api/v1/models", {}, min(timeout, 10.0))
+            prices = {}
+            for item in data.get("data", []):
+                if ":" in item.get("id", ""):  # :free, :batch and other variants are not the base model's price
+                    continue
+                entry = _from_openrouter(item)
+                if entry and entry["input"] is not None and "/" in entry["id"]:
+                    vendor = entry["id"].split("/")[0]
+                    prices[f"{vendor}/{_model_key(entry['id'])}"] = {k: entry[k] for k in ("input", "output", "free", "context")}
+            cached = {"at": time.time(), "prices": prices}
+            _write_json(path, cached)
+        except Exception:
+            return (cached or {}).get("prices", {}) if isinstance(cached, dict) else {}
+    return cached.get("prices", {})
+
+
+def _add_list_prices(p: Provider, models: list[dict], timeout: float) -> None:
+    vendor = PRICE_SOURCES.get(p.id)
+    if not vendor or all(m["input"] is not None for m in models):
+        return
+    prices = _public_prices(timeout)
+    for m in models:
+        found = prices.get(f"{vendor}/{_model_key(m['id'])}")
+        if found and m["input"] is None:
+            m.update(input=found["input"], output=found["output"], free=found["free"], price_source="openrouter")
+            m["context"] = m["context"] or found.get("context")
+
+
+def _fingerprint(p: Provider) -> str:
+    import hashlib
+
+    return hashlib.sha256(f"{p.id}|{_base_url(p) or ''}|{_key(p) or ''}".encode()).hexdigest()[:16]
+
+
+def model_catalog(provider: str, timeout: float = CATALOG_TIMEOUT) -> dict:
+    """Every model the provider serves to this key, with what is known about each one.
+
+    Returns {"models": [...], "live": bool, "error": str | None, "fetched_at": float | None}.
+    Each model: id, name, context (tokens), tools (True, False or None when unknown), input and output
+    (US dollars per million tokens, None when unknown), free (True, False or None), price_source
+    ("provider", "openrouter" for the maker's list price, "local", or None).
+    "live" is False when the list could not be fetched: then the last list fetched with the same key,
+    or the built-in suggestions, are returned with the reason in "error".
+    """
+    import time
+
+    p = PROVIDERS[provider]
+    blank = {"name": "", "context": None, "tools": None, "input": None, "output": None, "free": None, "price_source": None}
+    fallback = [{"id": m, **blank} for m in (list(p.suggestions) or ([p.chat_model] if p.chat_model else []))]
+    if p.local:
+        for m in fallback:
+            m.update(input=0.0, output=0.0, free=True, price_source="local")
+    def without_list(error: str) -> dict:
+        _add_list_prices(p, fallback, timeout)
+        return {"models": fallback, "live": False, "error": error, "fetched_at": None}
+
+    if p.id == "custom" and not _base_url(p):
+        return {"models": [], "live": False, "error": "Set the base URL of your server first.", "fetched_at": None}
+    if not p.local and p.id != "custom" and not _key(p):
+        return without_list(f"Add a {p.label} API key to see its models.")
+    cache = _cache_dir() / f"models-{p.id}.json"
+    try:
+        models = _fetch_models(p, timeout)
+    except Exception as exc:
+        error = _friendly_fetch_error(p, exc, timeout)
+        saved = _read_json(cache)
+        if isinstance(saved, dict) and saved.get("fingerprint") == _fingerprint(p) and saved.get("models"):
+            return {"models": saved["models"], "live": False, "error": error, "fetched_at": saved.get("at")}
+        return without_list(error)
+    if not models:
+        return without_list(f"{p.label} sent an empty model list.")
+    _add_list_prices(p, models, timeout)
+    order = {m: i for i, m in enumerate(p.suggestions)}
+    unique = {m["id"]: m for m in models}
+    models = sorted(unique.values(), key=lambda m: (order.get(m["id"], len(order)), m["id"].lower()))
+    now = time.time()
+    _write_json(cache, {"fingerprint": _fingerprint(p), "at": now, "models": models})
+    return {"models": models, "live": True, "error": None, "fetched_at": now}
+
+
+def list_models(provider: str, timeout: float = CATALOG_TIMEOUT) -> list[str]:
+    """The ids from model_catalog: the live list, or the built-in suggestions when it cannot be fetched."""
+    return [m["id"] for m in model_catalog(provider, timeout)["models"]]
 
 
 def _restrict(path: Path, mode: int) -> None:

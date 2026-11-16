@@ -727,10 +727,10 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         return engine.state()
 
     @app.get("/api/models", dependencies=[Depends(auth)])
-    def models(provider: str):
+    def models(provider: str):  # sync: FastAPI runs it in a worker thread
         if provider not in prov.PROVIDERS:
             raise HTTPException(404, "unknown provider")
-        return {"models": prov.list_models(provider)}
+        return prov.model_catalog(provider)
 
     @app.get("/api/dictation/progress", dependencies=[Depends(auth)])
     async def dictation_progress():

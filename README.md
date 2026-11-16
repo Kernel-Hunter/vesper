@@ -259,8 +259,15 @@ Start it with `vesper app`, from Launchpad or the Start menu, or with `vesper-ap
 |---|---|
 | OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Mistral, Groq, OpenRouter, xAI Grok, Together AI, Fireworks AI, Cerebras, NVIDIA NIM, Hugging Face, Moonshot Kimi | Ollama, LM Studio, any OpenAI-compatible server |
 
-Pick one with `/model`, or once with `--model provider/model`, for example
+Pick one with `/model` (or the model button in the app), or once with `--model provider/model`, for example
 `--model anthropic/claude-sonnet-5-5` or `--model ollama/qwen2.5:7b-instruct`.
+The model list shows every model your key can use, fetched from the provider, with the price
+per million input and output tokens, the context size, and which models are free. Search it,
+or show only the free ones (`free` in the terminal, the Free button in the app). Where a
+provider's list has no prices (OpenAI, Anthropic, Mistral and others), Vesper shows the
+maker's list price as published on OpenRouter; models it cannot match show no price rather
+than a guess. Models marked "no tools" cannot call tools, so they cannot work as an agent.
+
 The model needs tool calling. Larger models make better agents: a 7B local model handles
 reading, searching and small edits, and a hosted model is the better choice for long tasks.
 
@@ -369,7 +376,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.9.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.9.2` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

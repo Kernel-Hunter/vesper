@@ -123,6 +123,105 @@ def choose(title: str, options: list[tuple[str, str]], default: int = 0) -> int 
         console.print(Text("  Type a number from the list.", style=WARN))
 
 
+MODEL_PAGE = 25
+MODEL_ID = re.compile(r"^[\w.:/@+\-]{1,200}$")
+
+
+def _money(n: float) -> str:
+    return "$0" if n == 0 else f"${float(f'{n:.{2 if n < 1 else 3}g}'):g}"
+
+
+def model_price(m: dict) -> str:
+    """"Free", "Local", "$0.15 / $0.6" (dollars per million input / output tokens), or "" when unknown."""
+    if m.get("free"):
+        return "Local" if m.get("price_source") == "local" else "Free"
+    if m.get("input") is None or m.get("output") is None:
+        return ""
+    return f"{_money(m['input'])} / {_money(m['output'])}"
+
+
+def model_context(tokens) -> str:
+    if not isinstance(tokens, int) or tokens <= 0:
+        return ""
+    return f"{tokens / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M" if tokens >= 1_000_000 else f"{round(tokens / 1000)}k"
+
+
+def filter_models(models: list[dict], query: str, only_free: bool) -> list[dict]:
+    words = query.lower().split()
+    return [m for m in models if (not only_free or m.get("free") is True)
+            and all(w in f"{m['id']} {m.get('name', '')}".lower() for w in words)]
+
+
+def choose_model(p, catalog: dict, current: str | None) -> str | None:
+    """Pick from every model the provider serves: type words to search, `free` for free models,
+    a number to choose, or a full model id. Returns the id, or None if cancelled."""
+    models = catalog["models"]
+    if catalog.get("error"):
+        fallback = " Showing the last list fetched." if catalog.get("fetched_at") else " Showing suggested models."
+        console.print(Text(f"  {catalog['error']}{fallback if models else ''}", style=WARN))
+    free = sum(1 for m in models if m.get("free") is True)
+    query, only_free, offset = "", False, 0
+    ids = {m["id"] for m in models}
+    while True:
+        shown = filter_models(models, query, only_free)
+        page = shown[offset:offset + MODEL_PAGE]
+        width = max([len(m["id"]) for m in page] + [10])
+        console.print(Text.assemble(
+            ("Model", "bold"), (f"  {len(shown)} of {len(models)}", MUTED),
+            (f" · {free} free" if free else "", OK), (f' · matching "{query}"' if query else "", MUTED),
+            (" · free only" if only_free else "", MUTED), ("   price: $ per 1M tokens in / out", MUTED)))
+        for i, m in enumerate(page, start=offset + 1):
+            price = model_price(m)
+            console.print(Text.assemble(
+                (f"  {i:>3}  ", ACCENT), (m["id"].ljust(width), "bold" if m["id"] == current else ""),
+                (f"  {price:>15}" if price else f"  {'?':>15}", OK if m.get("free") else MUTED if not price else ""),
+                (f"  {model_context(m.get('context')):>5}", MUTED),
+                ("  no tools" if m.get("tools") is False else "", WARN), ("  ✓ current" if m["id"] == current else "", OK)))
+        more = len(shown) - offset - len(page)
+        hint = "number to choose · words to search · free · all"
+        if more > 0:
+            hint += f" · Enter for {min(more, MODEL_PAGE)} more"
+        console.print(Text(f"  {hint} · or type a full model id", style=MUTED))
+        try:
+            raw = input("  model: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            return None
+        if not raw:
+            if more > 0:
+                offset += MODEL_PAGE
+                continue
+            if page:
+                return current if current in ids and not query and not only_free else page[0]["id"]
+            continue
+        if raw.isdigit():
+            n = int(raw)
+            if 1 <= n <= len(shown):
+                return shown[n - 1]["id"]
+            console.print(Text(f"  Type a number from 1 to {len(shown)}.", style=WARN))
+            continue
+        if raw in ids:
+            return raw
+        if raw.lower() == "free":
+            only_free, offset = True, 0
+            continue
+        if raw.lower() == "all":
+            query, only_free, offset = "", False, 0
+            continue
+        if filter_models(models, raw, only_free):
+            query, offset = raw, 0
+            continue
+        if MODEL_ID.match(raw) and ("/" in raw or ":" in raw or "-" in raw):
+            try:
+                ok = input(f'  "{raw}" is not in the list. Use it anyway? [y/N] ').strip().lower() in ("y", "yes")
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if ok:
+                return raw
+            continue
+        console.print(Text(f'  No model matches "{raw}".', style=WARN))
+
+
 def pick_model(cfg: dict) -> bool:
     from vesper import providers as prov
 
@@ -150,28 +249,11 @@ def pick_model(cfg: dict) -> bool:
     if p.key_env and not p.local and pid != "custom" and not prov._key(p) and not ask_key(pid):
         return False
     with console.status(Text("Fetching models…", style=MUTED), spinner="dots", spinner_style=ACCENT):
-        try:
-            live = prov.list_models(pid)
-        except Exception:
-            live = []
-    models = list(dict.fromkeys([*p.suggestions, *[m for m in live if "embed" not in m.lower()]]))[:30]
-    if not models and p.chat_model:
-        models = [p.chat_model]
-    start = models.index(cfg["model"]) if pid == cfg.get("provider") and cfg.get("model") in models else 0
-    opts = [(m, "default" if m == p.chat_model else "") for m in models] + [("Type another model id", "")]
-    j = choose("Model", opts, start)
-    if j is None:
+        catalog = prov.model_catalog(pid)
+    current = cfg.get("model") if pid == cfg.get("provider") else None
+    model = choose_model(p, catalog, current)
+    if model is None:
         return False
-    if j == len(models):
-        try:
-            model = input("  model id: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            return False
-        if not re.match(r"^[\w.:/@+\-]{1,200}$", model):
-            error_panel("That does not look like a model id.")
-            return False
-    else:
-        model = models[j]
     cfg.update(provider=pid, model=model)
     save_config({"provider": pid, "model": model})
     return True
