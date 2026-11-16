@@ -163,7 +163,7 @@ def make_llm(cfg: dict):
 def context_tokens(cfg: dict) -> int:
     from vesper import providers as prov
 
-    return prov.context_tokens(cfg.get("provider"))
+    return prov.context_tokens(cfg.get("provider"), cfg.get("model"))
 
 
 def friendly(exc: BaseException, cfg: dict) -> str:

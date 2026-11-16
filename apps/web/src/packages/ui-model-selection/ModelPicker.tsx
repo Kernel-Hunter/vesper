@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../connection/api'
 import { openSettings, saveSettings, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
+import { effortLabel, effortSupport } from './effort'
 
 // Live model lists, kept for a minute: keys and models can change in the terminal app meanwhile.
 const modelCache = new Map<string, { at: number; models: string[] }>()
@@ -125,6 +126,7 @@ export function ModelPicker({ onClose }: { onClose: () => void }) {
                   onClick={() => void choose(m)}
                 >
                   <span>{m}</span>
+                  <small className={`picker-effort ${effortSupport(active, m)}`}>{effortLabel[effortSupport(active, m)]}</small>
                   {m === current.model && active === current.provider && <Icon name="check" size={13} />}
                 </button>
               ))}

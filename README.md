@@ -243,8 +243,13 @@ it, and use the trash button to delete it. Type `/` in the message box for comma
 step: the model's thinking, each command line, each diff and the full output. A running
 command streams its output into the chat in either view.
 
-Themes: system, dark, light, and a terminal theme with five phosphor colors and optional
-background effects that pause when the window is hidden.
+Several conversations can run at the same time, each in its own folder; the sidebar marks
+the ones still working and the ones with a new answer. Right-click a conversation to pin,
+archive, fork it (a copy of the history to try another direction) or open it in its own
+window. The top bar shows how full the model's context is.
+
+Themes: system, dark, light, a set of color palettes, and a terminal theme with phosphor
+colors and optional background effects that pause when the window is hidden.
 
 Start it with `vesper app`, from Launchpad or the Start menu, or with `vesper-app`.
 
@@ -364,7 +369,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.8.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.9.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Contributing

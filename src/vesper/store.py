@@ -22,7 +22,7 @@ from pathlib import Path
 
 from langchain_core.messages import BaseMessage, messages_from_dict, messages_to_dict
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
@@ -33,6 +33,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     source      TEXT NOT NULL DEFAULT 'terminal',   -- terminal | print | desktop
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_sidebar (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    unread INTEGER NOT NULL DEFAULT 0,
+    completed INTEGER NOT NULL DEFAULT 0,
+    section TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -130,14 +139,29 @@ class Store:
                 row = rows[0] if len(rows) == 1 else None
         return dict(row) if row else None
 
-    def list_sessions(self, limit: int = 20, cwd: str | Path | None = None) -> list[dict]:
-        """Newest first, with message counts. Sessions that never got a message are left out."""
-        where, args = "", []
+    def list_sessions(self, limit: int = 20, cwd: str | Path | None = None,
+                      query: str | None = None) -> list[dict]:
+        """Newest first, optionally matching titles, folders or saved human/AI message content."""
+        conditions, args = [], []
         if cwd is not None:
-            where, args = "WHERE s.cwd = ?", [str(cwd)]
+            conditions.append("s.cwd = ?")
+            args.append(str(cwd))
+        if query and query.strip():
+            conditions.append(
+                "(instr(lower(s.title), lower(?)) > 0 OR instr(lower(s.cwd), lower(?)) > 0 OR EXISTS "
+                "(SELECT 1 FROM messages m2 WHERE m2.session_id = s.id AND m2.role IN ('human', 'ai') "
+                "AND instr(lower(CASE WHEN json_valid(m2.data) THEN json_extract(m2.data, '$.data.content') "
+                "ELSE '' END), lower(?)) > 0))"
+            )
+            args.extend([query.strip()] * 3)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
         with self._lock:
             rows = self._db.execute(
-                f"SELECT s.*, COUNT(m.seq) AS messages FROM sessions s JOIN messages m ON m.session_id = s.id "
+                f"SELECT s.*, COUNT(m.seq) AS messages, COALESCE(b.pinned, 0) AS pinned, "
+                f"COALESCE(b.archived, 0) AS archived, COALESCE(b.unread, 0) AS unread, "
+                f"COALESCE(b.completed, 0) AS completed, COALESCE(b.section, '') AS section, "
+                f"COALESCE(b.position, 0) AS position FROM sessions s JOIN messages m ON m.session_id = s.id "
+                f"LEFT JOIN session_sidebar b ON b.session_id = s.id "
                 f"{where} GROUP BY s.id ORDER BY s.updated_at DESC LIMIT ?", (*args, int(limit)),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -149,6 +173,30 @@ class Store:
     def delete_session(self, session_id: str) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def update_sidebar(self, session_id: str, fields: dict) -> None:
+        """Store presentation metadata without changing the conversation's update time."""
+        allowed = {k: v for k, v in fields.items()
+                   if k in ("pinned", "archived", "unread", "completed", "section", "position")}
+        if not allowed:
+            return
+        sets = ", ".join(f"{k} = ?" for k in allowed)
+        with self._lock, self._db:
+            self._db.execute("INSERT OR IGNORE INTO session_sidebar (session_id) VALUES (?)", (session_id,))
+            self._db.execute(f"UPDATE session_sidebar SET {sets} WHERE session_id = ?", (*allowed.values(), session_id))
+
+    def fork_session(self, session_id: str) -> str:
+        """Copy messages, but never copy undo checkpoints or activity logs into the fork."""
+        sid = new_id()
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sessions (id, title, cwd, provider, model, source, created_at, updated_at) "
+                "SELECT ?, substr(title || ' (fork)', 1, ?), cwd, provider, model, 'desktop', ?, ? "
+                "FROM sessions WHERE id = ?", (sid, TITLE_CHARS, now, now, session_id))
+            self._db.execute("INSERT INTO messages (session_id, seq, role, data) "
+                             "SELECT ?, seq, role, data FROM messages WHERE session_id = ?", (sid, session_id))
+        return sid
 
     # ---------------------------------------------------------------- messages
     def save_messages(self, session_id: str, messages: list[BaseMessage]) -> None:
@@ -204,6 +252,21 @@ class Store:
                 (session_id, time.time(), kind, name, None if ok is None else int(ok), ms,
                  json.dumps(_clip(detail or {}), ensure_ascii=False, default=str)),
             )
+
+    def last_usage(self, session_id: str) -> dict | None:
+        """Most recent completed turn's usage, even after reopening a conversation."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT detail FROM events WHERE session_id = ? AND kind = 'usage' ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            detail = json.loads(row["detail"])
+            return detail if isinstance(detail, dict) else None
+        except (TypeError, ValueError):
+            return None
 
     def events(self, session_id: str, limit: int = 200) -> list[dict]:
         """The last `limit` events of a session, oldest first."""

@@ -2,8 +2,9 @@
 // separate child process + the engine's web UI as the renderer.
 
 import { mkdtempSync, rmSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import {
   app,
   BrowserWindow,
@@ -124,7 +125,7 @@ function attachContextMenu(window: BrowserWindow): void {
   })
 }
 
-function createWindow(info: EngineInfo, show = true): BrowserWindow {
+function createWindow(info: EngineInfo, show = true, sessionId?: string): BrowserWindow {
   const window = new BrowserWindow({
     title: 'Vesper',
     width: 1280,
@@ -150,7 +151,9 @@ function createWindow(info: EngineInfo, show = true): BrowserWindow {
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined
   })
-  void window.loadURL(info.url)
+  const url = new URL(info.url)
+  if (sessionId) url.searchParams.set('session', sessionId)
+  void window.loadURL(url.toString())
   return window
 }
 
@@ -172,6 +175,26 @@ ipcMain.handle('vesper:pick-files', async (event) => {
   const options = { title: 'Attach files', properties }
   const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options)
   return result.canceled ? [] : result.filePaths.slice(0, 20)
+})
+
+// Explicit user actions only. Never expose a general command runner to the page.
+ipcMain.handle('vesper:open-session-window', (event, id: unknown) => {
+  if (!sameOrigin(event.senderFrame?.url ?? '') || typeof id !== 'string' || !/^[0-9a-f]{4,32}$/.test(id) || !engine.info) return false
+  createWindow(engine.info, !SMOKE, id)
+  return true
+})
+
+ipcMain.handle('vesper:open-folder', async (event, path: unknown, target: unknown) => {
+  if (!sameOrigin(event.senderFrame?.url ?? '') || typeof path !== 'string' || path.length > 4096 ||
+      path.includes('\0') || !isAbsolute(path) || (target !== 'finder' && target !== 'vscode')) return false
+  try {
+    if (!(await stat(path)).isDirectory()) return false
+    if (target === 'finder') return (await shell.openPath(path)) === ''
+    const url = new URL('vscode://file/')
+    url.pathname = path
+    await shell.openExternal(url.toString())
+    return true
+  } catch { return false }
 })
 
 function lockDownSession(): void {
@@ -250,6 +273,182 @@ async function runSmoke(): Promise<void> {
     const check = "document.querySelector('#root, #app') !== null && document.body.innerText.length > 0"
     while (Date.now() < deadline) {
       if (await contents.executeJavaScript(check) === true) {
+        // Exercise the actual appearance controls, including persistence and terminal phosphors.
+        const appearance = await contents.executeJavaScript(`(async () => {
+          const wait = () => new Promise(r => setTimeout(r, 50));
+          const find = async (selector, text) => {
+            for (let i = 0; i < 100; i++) {
+              const node = [...document.querySelectorAll(selector)].find(n => n.textContent.includes(text));
+              if (node) return node;
+              await wait();
+            }
+            throw new Error('Missing appearance control: ' + text);
+          };
+          (await find('.side-link', 'Customize')).click();
+          (await find('.theme-card', 'Nebula')).click();
+          await wait();
+          const theme = document.documentElement.dataset.theme;
+          const before = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+          const details = document.querySelector('.color-advanced');
+          const detailsInitiallyClosed = details && !details.open;
+          (await find('.palette-card', 'Ion Cloud')).click(); await wait();
+          const coordinated = JSON.parse(localStorage.getItem('vesper.appearance') || '{}').palettes?.nebula;
+          const presetSelected = (await find('.palette-card', 'Ion Cloud')).getAttribute('aria-pressed') === 'true';
+          (await find('.theme-card', 'Pixel Arcade')).click(); await wait();
+          (await find('.theme-card', 'Nebula')).click(); await wait();
+          const restoredPreset = (await find('.palette-card', 'Ion Cloud')).getAttribute('aria-pressed') === 'true';
+          const basePicker = document.querySelector('input[aria-label="Palette color"]');
+          if (!basePicker) throw new Error('Missing palette generator');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(basePicker, '#d43a66');
+          basePicker.dispatchEvent(new Event('input', { bubbles: true }));
+          basePicker.dispatchEvent(new Event('change', { bubbles: true })); await wait();
+          const generated = JSON.parse(localStorage.getItem('vesper.appearance') || '{}').palettes?.nebula;
+          (await find('.palette-tones button', 'Light')).click(); await wait();
+          const lightSaved = JSON.parse(localStorage.getItem('vesper.appearance') || '{}');
+          const generatedLight = lightSaved.palettes?.nebula;
+          (await find('.palette-tones button', 'Dark')).click(); await wait();
+          const generatedAgain = JSON.parse(localStorage.getItem('vesper.appearance') || '{}').palettes?.nebula;
+          (await find('.palette-card', 'Original')).click(); await wait();
+          const originalSelected = (await find('.palette-card', 'Original')).getAttribute('aria-pressed') === 'true';
+          details.open = true;
+          (await find('.accent-swatches button', 'Mint')).click();
+          await wait();
+          const after = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+          const saved = JSON.parse(localStorage.getItem('vesper.appearance') || '{}');
+          const picker = document.querySelector('input[aria-label="Custom accent color"]');
+          if (!picker) throw new Error('Missing custom color picker');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(picker, '#336699');
+          picker.dispatchEvent(new Event('input', { bubbles: true }));
+          picker.dispatchEvent(new Event('change', { bubbles: true }));
+          await wait();
+          const custom = JSON.parse(localStorage.getItem('vesper.appearance') || '{}');
+          (await find('.theme-card', 'Terminal')).click();
+          await wait();
+          const phosInput = document.querySelector('input[aria-label="Phosphor hex color"]');
+          if (!phosInput) throw new Error('Missing phosphor editor');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(phosInput, '#99ff00');
+          phosInput.dispatchEvent(new Event('input', { bubbles: true })); await wait();
+          const customPhosphor = getComputedStyle(document.documentElement).getPropertyValue('--phos').trim();
+          (await find('.swatch', 'Amber')).click();
+          await wait();
+          const terminal = document.documentElement.dataset.theme;
+          const phosphor = document.documentElement.dataset.phosphor;
+          const presetPhosphor = getComputedStyle(document.documentElement).getPropertyValue('--phos').trim();
+          const designs = {};
+          for (const [label, id] of [['Workbench', 'workbench'], ['Synthwave', 'synthwave'], ['Pixel Arcade', 'pixel'], ['Typewriter', 'typewriter']]) {
+            (await find('.theme-card', label)).click();
+            await wait();
+            designs[id] = { theme: document.documentElement.dataset.theme, accent: JSON.parse(localStorage.getItem('vesper.appearance') || '{}').accent,
+              background: getComputedStyle(document.querySelector('.main')).backgroundImage,
+              radius: getComputedStyle(document.querySelector('.composer')).borderRadius,
+              font: getComputedStyle(document.querySelector('.composer textarea')).fontFamily };
+          }
+          const color = async (label, value) => {
+            const input = document.querySelector('input[aria-label="' + label + ' hex color"]');
+            if (!input) throw new Error('Missing studio color: ' + label);
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            await wait();
+          };
+          for (const [label, value] of [['Canvas', '#101828'], ['Sidebar', '#182436'], ['Surfaces', '#22334b'], ['Text', '#f4f6ff'], ['Your messages', '#33455c'], ['Accent', '#f0c060']]) await color(label, value);
+          await color('Canvas', '#f4f6ff');
+          const contrastWarning = !!document.querySelector('.color-warning');
+          document.querySelector('button[aria-label="Reset canvas color"]').click(); await wait();
+          const resetCanvas = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+          await color('Canvas', '#101828');
+          const choose = async (label, value) => {
+            const select = [...document.querySelectorAll('.theme-details label')].find(n => n.textContent.includes(label))?.querySelector('select');
+            if (!select) throw new Error('Missing theme detail: ' + label);
+            select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); await wait();
+          };
+          await choose('Type style', 'serif');
+          await choose('Corner style', 'rounded');
+          document.querySelector('.theme-art-toggle input').click(); await wait();
+          const studio = { saved: JSON.parse(localStorage.getItem('vesper.appearance') || '{}'),
+            background: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(),
+            composer: getComputedStyle(document.querySelector('.composer')).backgroundColor,
+            font: getComputedStyle(document.querySelector('.composer textarea')).fontFamily,
+            radius: getComputedStyle(document.querySelector('.composer')).borderRadius,
+            art: document.documentElement.dataset.art, artwork: getComputedStyle(document.querySelector('.main')).backgroundImage,
+            contrastWarning, resetCanvas };
+          (await find('.theme-card', 'Pixel Arcade')).click(); await wait();
+          const pixelBackground = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+          (await find('.theme-card', 'Typewriter')).click(); await wait();
+          const restored = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+          return { theme, before, after, savedTheme: saved.theme, savedAccent: saved.accent,
+            customAccent: custom.accent, customColor: custom.customAccent, terminal, phosphor, customPhosphor, presetPhosphor, designs, studio, pixelBackground, restored,
+            detailsInitiallyClosed, coordinated, presetSelected, restoredPreset, generated, generatedLight, generatedAgain, savedSeed: lightSaved.paletteSeeds?.nebula, originalSelected };
+        })()`)
+        if (appearance.theme !== 'nebula' || appearance.before === appearance.after || appearance.savedTheme !== 'nebula' ||
+            appearance.savedAccent !== 'mint' || appearance.customAccent !== 'custom' || appearance.customColor !== '#336699' ||
+            !appearance.detailsInitiallyClosed || !appearance.presetSelected || !appearance.restoredPreset || !appearance.originalSelected ||
+            appearance.coordinated?.background !== '#191c35' || appearance.coordinated?.accent !== '#c8c2ff' ||
+            Object.keys(appearance.generated ?? {}).length !== 6 || appearance.generated.background === appearance.coordinated.background ||
+            appearance.generated.sidebar === appearance.coordinated.sidebar || appearance.generated.surface === appearance.coordinated.surface ||
+            appearance.generated.bubble === appearance.coordinated.bubble || appearance.generated.accent === appearance.coordinated.accent ||
+            appearance.generatedLight?.background === appearance.generated.background || appearance.savedSeed !== '#d43a66' ||
+            JSON.stringify(appearance.generatedAgain) !== JSON.stringify(appearance.generated) ||
+            appearance.terminal !== 'terminal' || appearance.phosphor !== 'amber' || appearance.customPhosphor !== '#99ff00' || appearance.presetPhosphor !== '#ffb000' ||
+            Object.entries(appearance.designs as Record<string, { theme: string; accent: string; background: string }>).some(([id, d]) => d.theme !== id || d.accent !== 'theme' || d.background === 'none') ||
+            appearance.designs.pixel.radius !== '0px' || !appearance.designs.typewriter.font.includes('Courier') ||
+            appearance.studio.saved.palettes?.typewriter?.background !== '#101828' || appearance.studio.saved.palettes?.typewriter?.surface !== '#22334b' ||
+            appearance.studio.saved.palettes?.typewriter?.accent !== '#f0c060' || appearance.studio.saved.styles?.typewriter?.font !== 'serif' ||
+            appearance.studio.background !== '#101828' || appearance.studio.composer !== 'rgb(34, 51, 75)' ||
+            !appearance.studio.font.includes('Georgia') || appearance.studio.radius !== '32px' || appearance.studio.art !== 'off' || appearance.studio.artwork !== 'none' ||
+            !appearance.studio.contrastWarning || appearance.studio.resetCanvas !== '#f5edda' ||
+            appearance.pixelBackground === '#101828' || appearance.restored !== '#101828') {
+          throw new Error('appearance controls did not apply or persist')
+        }
+        // Exercise the restricted native bridge and the separate-window URL in a real renderer.
+        const bridge = await contents.executeJavaScript(`(async () => ({
+          invalidId: await window.vesperDesktop.openSessionWindow('../bad'),
+          invalidPath: await window.vesperDesktop.openFolder('relative/path', 'finder'),
+          opened: await window.vesperDesktop.openSessionWindow('abcdef123456')
+        }))()`)
+        if (bridge.invalidId !== false || bridge.invalidPath !== false || bridge.opened !== true) throw new Error('native bridge failed')
+        const extra = BrowserWindow.getAllWindows().find(w => w !== mainWindow)
+        if (!extra) throw new Error('new conversation window was not created')
+        if (extra.webContents.isLoading()) await new Promise<void>((resolveLoad, rejectLoad) => {
+          extra.webContents.once('did-finish-load', () => resolveLoad())
+          extra.webContents.once('did-fail-load', (_e, code, description) => rejectLoad(new Error(`new window failed: ${description} (${code})`)))
+        })
+        // The test ID does not exist: its expected 404 toast proves the new renderer tried to open it.
+        const until = Math.min(deadline, Date.now() + 10000)
+        let triedSession = false
+        while (Date.now() < until && !triedSession) {
+          triedSession = await extra.webContents.executeJavaScript("document.body.innerText.includes('That conversation is not in the history.')")
+          if (!triedSession) await new Promise(r => setTimeout(r, 100))
+        }
+        if (!triedSession) throw new Error('new window did not load its requested session')
+        const initialTheme = await extra.webContents.executeJavaScript("({ theme: document.documentElement.dataset.theme, bg: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() })")
+        if (initialTheme.theme !== 'typewriter' || initialTheme.bg !== '#101828') throw new Error('new window did not restore theme colors')
+        await contents.executeJavaScript(`(() => {
+          const input = document.querySelector('input[aria-label="Canvas hex color"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '#142538');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`)
+        let synced = false
+        while (Date.now() < until && !synced) {
+          synced = await extra.webContents.executeJavaScript("getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#142538'")
+          if (!synced) await new Promise(r => setTimeout(r, 100))
+        }
+        if (!synced) throw new Error('theme edits did not sync to the other window')
+        const generatedColors = await contents.executeJavaScript(`(() => {
+          const input = document.querySelector('input[aria-label="Palette color"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '#b46599');
+          input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
+          const css = getComputedStyle(document.documentElement);
+          return ['--bg', '--bg-side', '--layer-1', '--accent'].map(n => css.getPropertyValue(n).trim());
+        })()`)
+        const paletteDeadline = Math.min(deadline, Date.now() + 5000)
+        let paletteSynced = false
+        while (Date.now() < paletteDeadline && !paletteSynced) {
+          const other = await extra.webContents.executeJavaScript("['--bg', '--bg-side', '--layer-1', '--accent'].map(n => getComputedStyle(document.documentElement).getPropertyValue(n).trim())")
+          paletteSynced = JSON.stringify(other) === JSON.stringify(generatedColors)
+          if (!paletteSynced) await new Promise(r => setTimeout(r, 100))
+        }
+        if (!paletteSynced) throw new Error('generated palette did not sync to the other window')
+        extra.destroy()
         clearTimeout(timer)
         await finishSmoke(0, '')
         return
@@ -294,10 +493,11 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
   app.exit(0)
 } else {
   app.on('second-instance', () => {
-    if (mainWindow === undefined) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    const window = mainWindow ?? BrowserWindow.getAllWindows()[0]
+    if (!window) return
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
   })
 
   nativeTheme.on('updated', () => {
@@ -320,7 +520,7 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
 
   app.on('activate', () => {
     if (SMOKE || quitting) return
-    if (mainWindow === undefined && engine.info !== undefined) mainWindow = createWindow(engine.info)
+    if (BrowserWindow.getAllWindows().length === 0 && engine.info !== undefined) mainWindow = createWindow(engine.info)
   })
 
   app.on('before-quit', (event) => {

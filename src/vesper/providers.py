@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,9 +127,35 @@ def ollama_context_tokens() -> int:
         return OLLAMA_CONTEXT_TOKENS
 
 
-def context_tokens(provider: str | None) -> int:
-    """How many tokens a conversation with this provider may hold."""
-    return ollama_context_tokens() if provider == "ollama" else DEFAULT_CONTEXT_TOKENS
+def context_window(provider: str | None, model: str | None = None) -> tuple[int, str]:
+    """Window and provenance. Unknown aliases remain an assumption, not a model claim.
+
+    Provider documentation: platform.openai.com/docs/models, docs.anthropic.com/en/docs/about-claude/models/overview,
+    console.groq.com/docs/models. Only match documented IDs on the provider that serves them;
+    routing services and custom endpoints may impose different limits.
+    """
+    if provider == "ollama":
+        return ollama_context_tokens(), "requested"
+    p = PROVIDERS.get(provider or "")
+    name = (model or (p.chat_model if p else "")).lower()
+    if provider == "openai":
+        if re.fullmatch(r"gpt-4\.1(?:-(?:mini|nano))?(?:-2025-04-14)?", name):
+            return 1_047_576, "documented"
+        if re.fullmatch(r"gpt-4o(?:-mini)?(?:-\d{4}-\d{2}-\d{2})?", name):
+            return 128_000, "documented"
+    if provider == "anthropic":
+        if re.fullmatch(r"claude-(?:opus|sonnet|haiku)-5-5(?:-\d{8})?", name) or re.fullmatch(r"claude-(?:opus|sonnet)-4-6(?:-\d{8})?", name):
+            return 1_000_000, "documented"
+        if re.fullmatch(r"claude-(?:opus|sonnet|haiku)-4-5(?:-\d{8})?", name):
+            return 200_000, "documented"
+    if provider == "groq" and name in {"llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
+        return 131_072, "documented"
+    return DEFAULT_CONTEXT_TOKENS, "assumed"
+
+
+def context_tokens(provider: str | None, model: str | None = None) -> int:
+    """The documented, requested or assumed context window for this model."""
+    return context_window(provider, model)[0]
 
 
 def _key(provider: Provider) -> str | None:

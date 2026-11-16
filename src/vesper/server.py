@@ -78,6 +78,11 @@ OBSOLETE_SETTINGS = ("embeddings", "embed_model", "chunk_size", "chunk_overlap",
 
 def friendly_error(exc: Exception, provider: str) -> str:
     """A short message for an error from `provider`'s model."""
+    from langgraph.errors import GraphRecursionError
+
+    if isinstance(exc, GraphRecursionError):
+        return ("The agent reached its step limit before finishing. Review what it has already done, "
+                "then ask it to continue; if it repeated the same actions, narrow the task instead.")
     text = f"{type(exc).__name__}: {exc}"
     low = text.lower()
     p = prov.PROVIDERS.get(provider)
@@ -268,7 +273,7 @@ class Engine:
         self._llm = None
         self._llm_key = None
         self._sessions: OrderedDict[str, dict] = OrderedDict()
-        self._sessions_lock = threading.Lock()
+        self._sessions_lock = threading.RLock()
         self._approvals: dict[str, dict] = {}
         self._history_db = None
 
@@ -344,7 +349,7 @@ class Engine:
 
     def stream_answer(self, question: str, chat_id: str | None = None, history: list | None = None,
                       session_id: str | None = None, attachments: list | None = None, images: list | None = None,
-                      retry: bool = False):
+                      retry: bool = False, workspace: str | None = None):
         """Yields (event, data) pairs for the chat stream.
 
         `session_id` continues a conversation saved in the session database. `attachments` are
@@ -353,12 +358,12 @@ class Engine:
         """
         self.sync_settings()
         yield from self._stream_folder(question, chat_id or "default", history or [], session_id,
-                                       attachments or [], images or [], retry)
+                                       attachments or [], images or [], retry, workspace)
 
     # ----- folder agent -----
-    def _folder_session(self, chat_id: str, history: list, session_id: str | None = None):
-        """The agent session for one chat, rebuilt when the model changes. It follows the folder
-        picked in the app, and the agent may move on from there itself."""
+    def _folder_session(self, chat_id: str, history: list, session_id: str | None = None,
+                        workspace: str | None = None):
+        """The agent session for one chat, with its own working folder and history."""
         from langchain_core.messages import AIMessage, HumanMessage
 
         from vesper import permissions
@@ -370,25 +375,31 @@ class Engine:
         rules, hosts = permissions.load_rules("allow_commands"), permissions.load_rules("allow_hosts")
         with self._sessions_lock:
             entry = self._sessions.get(chat_id)
-            if entry is not None and entry["key"] == key:
+            if entry is None and session_id:
+                db = self.history_db()
+                saved_ref = db.get_session(session_id) if db is not None else None
+                if saved_ref:
+                    entry = next((item for item in self._sessions.values()
+                                  if item["session"].id == saved_ref["id"]), None)
+                    if entry is not None:
+                        self._sessions[chat_id] = entry  # aliases of the same saved conversation share its lock
+            if entry is not None and (entry["lock"].locked() or entry["key"] == key):
                 self._sessions.move_to_end(chat_id)
-                ws = entry["session"].workspace
-                ws.mode = s["agent_mode"]
-                ws.rules, ws.hosts = rules, hosts  # rules saved in another chat or the terminal count here too
-                if entry["picked"] != s["workspace"]:  # the user opened another folder in the app
-                    entry["picked"] = s["workspace"]
-                    ws.change_directory(s["workspace"])
+                if not entry["lock"].locked():
+                    ws = entry["session"].workspace
+                    ws.mode = s["agent_mode"]
+                    ws.rules, ws.hosts = rules, hosts
                 return entry
             db = self.history_db()
             saved = db.get_session(session_id) if db is not None and session_id and entry is None else None
-            if saved and Path(saved["cwd"]).is_dir():  # a saved conversation continues where it was
-                self.settings["workspace"] = saved["cwd"]
-                self.save({"workspace": saved["cwd"]})
-            ws = Workspace(Path(s["workspace"]), mode=s["agent_mode"], rules=rules, hosts=hosts,
+            # A running or resumed chat must never follow another chat's folder selection.
+            cwd = (str(entry["session"].workspace.root) if entry is not None else
+                   saved["cwd"] if saved and Path(saved["cwd"]).is_dir() else workspace or s["workspace"])
+            ws = Workspace(Path(cwd), mode=s["agent_mode"], rules=rules, hosts=hosts,
                            on_rule=lambda key, rule: permissions.save_rule(rule, key))
             session = Session(self.llm(), ws, db, session_id=saved["id"] if saved else None, source="desktop",
                               provider=s["provider"], model=s["model"],
-                              context_tokens=prov.context_tokens(s["provider"]))
+                              context_tokens=prov.context_tokens(s["provider"], s["model"]))
             if entry is not None:
                 old = entry["session"]  # same chat, new model: keep the conversation and its saved row
                 session.history, session.id, session.title, session._saved = old.history, old.id, old.title, old._saved
@@ -400,24 +411,36 @@ class Engine:
                     text = str(turn.get("text", ""))[:20000] if isinstance(turn, dict) else ""
                     if text:
                         session.history.append(HumanMessage(text) if turn.get("role") == "user" else AIMessage(text))
-            entry = {"key": key, "session": session, "lock": threading.Lock(), "picked": s["workspace"]}
+            previous = entry
+            entry = {"key": key, "session": session, "lock": threading.Lock()}
+            if previous is not None:
+                for alias, item in list(self._sessions.items()):
+                    if item is previous:
+                        self._sessions[alias] = entry
             self._sessions[chat_id] = entry
             while len(self._sessions) > MAX_SESSIONS:
-                self._sessions.popitem(last=False)
+                oldest_idle = next((cid for cid, item in self._sessions.items()
+                                    if cid != chat_id and not item["lock"].locked()), None)
+                if oldest_idle is None:
+                    break  # never lose a running chat's stop and approval controls
+                del self._sessions[oldest_idle]
             return entry
 
     def _stream_folder(self, question: str, chat_id: str, history: list, session_id: str | None = None,
-                       attachments: list | None = None, images: list | None = None, retry: bool = False):
+                       attachments: list | None = None, images: list | None = None, retry: bool = False,
+                       workspace: str | None = None):
         s = self.settings
         if not s["workspace"]:  # no project opened yet: start in the home folder, like a terminal does
             s["workspace"] = str(Path.home())
         try:
-            entry = self._folder_session(chat_id, history, session_id)
+            with self._sessions_lock:
+                entry = self._folder_session(chat_id, history, session_id, workspace)
+                acquired = entry["lock"].acquire(blocking=False)
         except Exception as exc:
             yield "error", {"message": friendly_error(exc, s["provider"])}
             yield "done", {}
             return
-        if not entry["lock"].acquire(blocking=False):
+        if not acquired:
             yield "error", {"message": "This chat is still answering. Wait for it or stop it first."}
             yield "done", {}
             return
@@ -426,7 +449,16 @@ class Engine:
         closed = threading.Event()
         mine: list[str] = []
         session = entry["session"]
-        entry["stop"] = lambda: (closed.set(), session.workspace.cancel())
+        def stop():
+            closed.set()
+            session.workspace.cancel()
+            for aid in list(mine):
+                slot = self._approvals.get(aid)
+                if slot is not None:
+                    slot["answer"] = "no"
+                    slot["event"].set()
+
+        entry["stop"] = stop
         if retry:
             session.drop_last_turn()
         try:
@@ -445,6 +477,8 @@ class Engine:
             self._approvals[aid] = slot
             mine.append(aid)
             events.put(("approval", {"id": aid, **action}))
+            if closed.is_set():  # stop may have raced with creating the approval slot
+                slot["event"].set()
             answered = slot["event"].wait(APPROVAL_TIMEOUT_S)
             self._approvals.pop(aid, None)
             if not answered:
@@ -455,29 +489,32 @@ class Engine:
         # Shown live by the app: output of a running command, and edits that needed no approval.
         session.workspace.on_output = lambda line: events.put(("output", {"line": line[:2000]}))
         session.workspace.on_auto = lambda action: events.put(("auto", action))
-        yield "session", {"id": session.id, "cwd": str(session.workspace.root)}
-        if shown["names"] or shown["problems"]:
-            yield "attached", {"names": shown["names"], "problems": shown["problems"]}
-
         def work():
             try:
                 for item in session.ask(text, shown=shown["question"], images=image_blocks):
                     if closed.is_set():
                         break
-                    if item[0] == "cwd":  # the agent moved: the app's folder follows it
-                        entry["picked"] = self.settings["workspace"] = item[1]["path"]
-                        self.save({"workspace": item[1]["path"]})
                     if item[0] != "done":
                         events.put(item)
             except Exception as exc:
                 traceback.print_exc()
                 events.put(("error", {"message": friendly_error(exc, s["provider"])}))
             finally:
-                events.put(None)
-                entry["lock"].release()
+                # Capture this turn's revision before another window can start a turn.
+                try:
+                    db = self.history_db()
+                    row = db.get_session(session.id) if db is not None else None
+                    if row is not None:
+                        events.put(("saved", {"id": session.id, "updated_at": row["updated_at"]}))
+                finally:
+                    entry["lock"].release()
+                    events.put(None)
 
         threading.Thread(target=work, daemon=True).start()
         try:
+            yield "session", {"id": session.id, "cwd": str(session.workspace.root)}
+            if shown["names"] or shown["problems"]:
+                yield "attached", {"names": shown["names"], "problems": shown["problems"]}
             while True:
                 item = events.get()
                 if item is None:
@@ -487,7 +524,8 @@ class Engine:
             # The client went away or the answer ended: stop commands, refuse anything still waiting.
             closed.set()
             session.workspace.cancel()
-            entry.pop("stop", None)
+            if entry.get("stop") is stop:
+                entry.pop("stop", None)
             for aid in mine:
                 slot = self._approvals.pop(aid, None)
                 if slot is not None:
@@ -556,10 +594,12 @@ class Engine:
         if not self.settings["workspace"]:
             raise HTTPException(409, "Open a folder first.")
         try:
-            entry = self._folder_session(chat_id, [], session_id)
+            with self._sessions_lock:
+                entry = self._folder_session(chat_id, [], session_id)
+                acquired = entry["lock"].acquire(blocking=False)
         except Exception as exc:
             raise HTTPException(409, friendly_error(exc, self.settings["provider"])) from exc
-        if not entry["lock"].acquire(blocking=False):
+        if not acquired:
             raise HTTPException(409, "This chat is still answering. Wait for it or stop it first.")
         return entry, entry["session"]
 
@@ -579,40 +619,59 @@ class Engine:
         try:
             before = session.tokens["context"]
             done = session.compact()
-            return {"compacted": done, "before": before, "context": session.tokens["context"]}
+            from vesper.coder import context_report
+
+            report = context_report(session.history, session.workspace, session.provider, session.model, session.context_tokens)
+            return {"compacted": done, "before": before, "context": report["used"], "context_report": report}
         finally:
             entry["lock"].release()
 
     def forget_chat(self, chat_id: str) -> None:
         with self._sessions_lock:
+            entry = self._sessions.get(chat_id)
+            if entry and entry["lock"].locked():
+                raise HTTPException(409, "Stop this conversation and wait for it to finish first.")
             self._sessions.pop(chat_id, None)
 
     # ----- saved sessions (the SQLite database the terminal app writes too) -----
-    def saved_sessions(self, limit: int = 100) -> list[dict]:
+    def saved_sessions(self, limit: int = 100, query: str | None = None) -> list[dict]:
         db = self.history_db()
-        return db.list_sessions(limit) if db is not None else []
+        rows = db.list_sessions(limit, query=query) if db is not None else []
+        with self._sessions_lock:
+            working = {entry["session"].id for entry in self._sessions.values() if entry["lock"].locked()}
+        return [{**row, "working": row["id"] in working} for row in rows]
 
     def saved_session(self, session_id: str) -> dict | None:
         """One saved conversation with its turns, ready for the app to draw."""
-        from vesper.coder import transcript
+        from vesper.coder import context_report, transcript
+        from vesper.workspace import Workspace
 
         db = self.history_db()
         row = db.get_session(session_id) if db is not None else None
         if row is None:
             return None
-        return {**row, "turns": transcript(db.load_messages(row["id"]))}
+        messages = db.load_messages(row["id"])
+        s = self.settings
+        workspace = Workspace(Path(row["cwd"]), mode=s["agent_mode"])
+        report = context_report(messages, workspace, s["provider"], s["model"])
+        return {**row, "turns": transcript(messages), "context_report": report, "last_usage": db.last_usage(row["id"])}
 
     def delete_saved_session(self, session_id: str) -> None:
         db = self.history_db()
         if db is None:
             raise HTTPException(503, "The session database cannot be opened.")
-        if db.get_session(session_id) is None:
+        row = db.get_session(session_id)
+        if row is None:
             raise HTTPException(404, "That conversation is not in the history.")
+        session_id = row["id"]
         with self._sessions_lock:
-            for chat_id, entry in list(self._sessions.items()):
-                if entry["session"].id == session_id:
-                    del self._sessions[chat_id]
-        db.delete_session(db.get_session(session_id)["id"])
+            matching = [(chat_id, entry) for chat_id, entry in self._sessions.items()
+                        if entry["session"].id == session_id]
+            if any(entry["lock"].locked() for _, entry in matching):
+                raise HTTPException(409, "Stop this conversation and wait for it to finish first.")
+            for chat_id, _ in matching:
+                del self._sessions[chat_id]
+            db.delete_session(session_id)
 
     # ----- view -----
     def state(self) -> dict:
@@ -722,9 +781,10 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         if not isinstance(attachments, list) or not isinstance(images, list):
             raise HTTPException(400, "attachments and images must be lists.")
         retry = body.get("retry") is True
+        workspace = _check_field("workspace", body["workspace"]) if "workspace" in body else None
 
         def events():
-            for event, data in engine.stream_answer(question, chat_id, history, session_id, attachments, images, retry):
+            for event, data in engine.stream_answer(question, chat_id, history, session_id, attachments, images, retry, workspace):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream",
@@ -781,8 +841,10 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         return get_permissions()
 
     @app.get("/api/sessions", dependencies=[Depends(auth)])
-    def sessions(limit: int = 100):
-        return {"sessions": engine.saved_sessions(max(1, min(int(limit), 500)))}
+    def sessions(limit: int = 100, q: str = ""):
+        if len(q) > 200:
+            raise HTTPException(400, "Search must be at most 200 characters.")
+        return {"sessions": engine.saved_sessions(max(1, min(int(limit), 500)), query=q)}
 
     @app.get("/api/sessions/{session_id}", dependencies=[Depends(auth)])
     def session(session_id: str):
@@ -797,6 +859,37 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(400, "That is not a session id.")
         engine.delete_saved_session(session_id)
         return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/sidebar", dependencies=[Depends(auth)])
+    async def sidebar_session(request: Request, session_id: str):
+        body = await json_body(request)
+        db = engine.history_db()
+        row = db.get_session(session_id) if db is not None and SESSION_ID.match(session_id) else None
+        if row is None:
+            raise HTTPException(404, "That conversation is not in the history.")
+        if not isinstance(body, dict) or not body or set(body) - {"pinned", "archived", "unread", "completed", "section", "position"}:
+            raise HTTPException(400, "Send valid sidebar settings.")
+        for key, value in body.items():
+            if key in ("pinned", "archived", "unread", "completed") and type(value) is not bool:
+                raise HTTPException(400, f"{key} must be true or false.")
+            if key == "section" and (not isinstance(value, str) or len(value) > 80 or any(ord(c) < 32 for c in value)):
+                raise HTTPException(400, "Section must be a short single-line name.")
+            if key == "position" and (type(value) is not int or not 0 <= value <= 1_000_000):
+                raise HTTPException(400, "Invalid position.")
+        db.update_sidebar(row["id"], body)
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/fork", dependencies=[Depends(auth)])
+    def fork_session(session_id: str):
+        db = engine.history_db()
+        row = db.get_session(session_id) if db is not None and SESSION_ID.match(session_id) else None
+        if row is None:
+            raise HTTPException(404, "That conversation is not in the history.")
+        with engine._sessions_lock:
+            if any(entry["session"].id == row["id"] and entry["lock"].locked() for entry in engine._sessions.values()):
+                raise HTTPException(409, "Wait for the conversation to finish before forking it.")
+            sid = db.fork_session(row["id"])
+        return {"id": sid}
 
     @app.post("/api/sessions/{session_id}/rename", dependencies=[Depends(auth)])
     async def rename_session(request: Request, session_id: str):

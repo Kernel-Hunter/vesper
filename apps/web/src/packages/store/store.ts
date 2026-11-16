@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from 'react'
 import {
   api, ApiError, type AgentMode, type ApprovalAnswer, type ApprovalRequest, type ImageUpload, type SavedSession,
-  type ServerState, type StreamEvent, type Task, type Usage,
+  type ContextReport, type ServerState, type SidebarChanges, type StreamEvent, type Task, type Usage,
 } from '../connection/api'
-import { applyAppearance, loadAppearance, saveAppearance, type Appearance } from '../ui-theme/appearance'
+import { APPEARANCE_KEY, applyAppearance, loadAppearance, saveAppearance, type Appearance } from '../ui-theme/appearance'
 import { blankMsg, MAX_TOOL_OUTPUT, turnsToMessages, uid } from './history'
 
 /** One tool call the agent made, drawn inline at text offset `at`. */
@@ -58,8 +58,14 @@ export interface Chat {
   title: string
   updated: number
   messages: Msg[]
+  /** Working folder belongs to this conversation, not other open chats. */
+  cwd: string
   /** Its row in the session database, once the engine has saved it. */
   sessionId?: string
+  /** Database revision of the messages shown here, in seconds. */
+  syncedAt?: number
+  contextReport?: ContextReport
+  lastUsage?: Usage
 }
 
 /** Something to send with the next message: a file or folder by path, or a pasted image. */
@@ -87,7 +93,8 @@ export interface State {
   /** Conversations opened in this window, newest first. */
   chats: Chat[]
   currentId: string | null
-  streamingId: string | null
+  newDraftId: string
+  streamingIds: string[]
   appearance: Appearance
   settings: { open: boolean; tab: SettingsTab; focusProvider: string | null }
   sidebar: boolean
@@ -97,8 +104,9 @@ export interface State {
   historyLoaded: boolean
   /** Transcript view: thinking, commands, edits and output are shown in full. */
   transcript: boolean
-  /** Files, folders and images waiting to go with the next message. */
-  attachments: Attachment[]
+  /** Drafts and attachments stay with their conversation while switching. */
+  drafts: Record<string, string>
+  attachments: Record<string, Attachment[]>
 }
 
 let state: State = {
@@ -106,7 +114,8 @@ let state: State = {
   connected: true,
   chats: [],
   currentId: null,
-  streamingId: null,
+  newDraftId: uid(),
+  streamingIds: [],
   appearance: loadAppearance(),
   settings: { open: false, tab: 'models', focusProvider: null },
   sidebar: true,
@@ -114,7 +123,8 @@ let state: State = {
   history: [],
   historyLoaded: false,
   transcript: (() => { try { return localStorage.getItem('vesper.transcript') === '1' } catch { return false } })(),
-  attachments: [],
+  drafts: {},
+  attachments: {},
 }
 // Chats used to be kept in this window's storage; the session database holds them now.
 try { for (const k of ['vesper.chats', 'pagewise.chats', 'raglab.chats']) localStorage.removeItem(k) } catch { /* private mode */ }
@@ -195,39 +205,65 @@ export function setAppearance(patch: Partial<Appearance>): void {
   applyAppearance(appearance)
   set({ appearance })
 }
+window.addEventListener('storage', (event: StorageEvent) => {
+  if (event.key !== APPEARANCE_KEY) return
+  const appearance = loadAppearance()
+  applyAppearance(appearance)
+  set({ appearance })
+})
 if (typeof matchMedia === 'function') {
-  matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyAppearance(state.appearance))
-  matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => applyAppearance(state.appearance))
+  const reapply = (): void => { const appearance = { ...state.appearance }; applyAppearance(appearance); set({ appearance }) }
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', reapply)
+  matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', reapply)
 }
 
 // ---------------- chats ----------------
 export const currentChat = (s: State): Chat | null => s.chats.find(c => c.id === s.currentId) ?? null
+export const currentRemoteBusy = (s: State): boolean => {
+  const chat = currentChat(s)
+  return !!chat?.sessionId && !s.streamingIds.includes(chat.id) && !!s.history.find(h => h.id === chat.sessionId)?.working
+}
+export const currentBusy = (s: State): boolean => (!!s.currentId && s.streamingIds.includes(s.currentId)) || currentRemoteBusy(s)
+const draftKey = (s: State): string => s.currentId ?? s.newDraftId
+const draftAliases = new Map<string, string>()
+export const currentDraft = (s: State): string => s.drafts[draftKey(s)] ?? ''
+const NO_ATTACHMENTS: Attachment[] = []
+export const currentAttachments = (s: State): Attachment[] => s.attachments[draftKey(s)] ?? NO_ATTACHMENTS
+export function setDraft(value: string | ((old: string) => string), target = draftKey(state)): void {
+  set(s => {
+    const key = target
+    return { drafts: { ...s.drafts, [key]: typeof value === 'function' ? value(s.drafts[key] ?? '') : value } }
+  })
+}
 
+let selection = 0
 export function selectChat(id: string): void {
-  if (!state.streamingId) set({ currentId: id })
+  selection++
+  set({ currentId: id })
+  const sid = state.chats.find(c => c.id === id)?.sessionId
+  if (sid && state.history.find(h => h.id === sid)?.unread) void updateSidebar(sid, { unread: false })
 }
 
 export function newChat(): void {
-  if (state.streamingId) return
-  set({ currentId: null })
+  selection++
+  set({ currentId: null, newDraftId: uid() })
 }
 
 /** Opens a conversation from the session database (or the copy already open). */
 export async function openSession(id: string): Promise<void> {
-  if (state.streamingId) return
+  const request = ++selection
+  if (state.history.find(h => h.id === id)?.unread) void updateSidebar(id, { unread: false })
   const open = state.chats.find(c => c.sessionId === id)
   if (open) { set({ currentId: open.id }); return }
   try {
     const saved = await api.session(id)
+    if (request !== selection) return
     const chat: Chat = {
       id: saved.id, title: saved.title || 'Untitled', updated: saved.updated_at * 1000,
-      messages: turnsToMessages(saved.turns), sessionId: saved.id,
+      messages: turnsToMessages(saved.turns), sessionId: saved.id, cwd: saved.cwd, syncedAt: saved.updated_at,
+      contextReport: saved.context_report, lastUsage: saved.last_usage ?? undefined,
     }
     set(s => ({ chats: [chat, ...s.chats.filter(c => c.id !== chat.id)], currentId: chat.id }))
-    // Continue where it was: in the conversation's folder, if it still exists.
-    if (state.server && state.server.settings.workspace !== saved.cwd) {
-      await api.settings({ workspace: saved.cwd }).then(server => set({ server }), () => undefined)
-    }
   } catch (e) {
     toast(errorText(e), 'error')
     void loadHistory()
@@ -237,7 +273,10 @@ export async function openSession(id: string): Promise<void> {
 /** Deletes a conversation everywhere: this window, the engine and the session database. */
 export async function deleteSession(id: string): Promise<void> {
   const chat = state.chats.find(c => c.sessionId === id || c.id === id)
-  if (chat && state.streamingId === chat.id) stop()
+  if (chat && state.streamingIds.includes(chat.id)) {
+    toast('Stop this conversation and wait for it to finish before deleting it.', 'error')
+    return
+  }
   try {
     if (chat?.sessionId || !chat) await api.deleteSession(chat?.sessionId ?? id)
   } catch (e) {
@@ -286,18 +325,22 @@ function patchMessage(chatId: string, msgId: string, patch: (m: Msg) => Partial<
   }))
 }
 
-let abort: AbortController | null = null
+const aborts = new Map<string, AbortController>()
 
+/** Stop only the selected conversation; leave other streams and approvals alone. */
 export function stop(): void {
-  const id = state.streamingId
-  if (id) api.stopChat(id).catch(() => undefined) // the engine ends the running command too
-  abort?.abort()
+  const id = state.currentId
+  if (!id || !state.streamingIds.includes(id)) return
+  const controller = aborts.get(id)
+  void api.stopChat(id).then(stopped => {
+    if (!stopped && aborts.get(id) === controller) controller?.abort()
+  }, () => { if (aborts.get(id) === controller) controller?.abort() })
 }
 
 /** True when a message can be sent now; otherwise explains why with a toast. */
 function readyToSend(): boolean {
   const s = state
-  if (s.streamingId) return false
+  if (currentBusy(s)) return false
   if (!s.server) { toast('Still connecting to the engine…', 'error'); return false }
   const p = s.server.providers.find(x => x.id === s.server?.settings.provider)
   if (p && p.needs_key && !p.has_key) {
@@ -310,14 +353,17 @@ function readyToSend(): boolean {
 
 export async function send(text: string, opts: { retry?: boolean } = {}): Promise<void> {
   const question = text.trim()
-  const attached = opts.retry ? [] : state.attachments
+  const attached = opts.retry ? [] : currentAttachments(state)
   if (!question && !attached.length) return
   if (!readyToSend()) return
 
+  const attachmentKey = draftKey(state)
   let chatId = state.currentId
   if (!chatId || !state.chats.some(c => c.id === chatId)) {
     chatId = uid()
-    const chat: Chat = { id: chatId, title: (question || attached[0]!.name).slice(0, 60), updated: Date.now(), messages: [] }
+    draftAliases.set(attachmentKey, chatId)
+    const chat: Chat = { id: chatId, title: (question || attached[0]!.name).slice(0, 60), updated: Date.now(), messages: [],
+      cwd: state.server?.settings.workspace || state.server?.home || '' }
     set(st => ({ chats: [chat, ...st.chats], currentId: chatId }))
   }
   const user: Msg = { ...blankMsg('user'), text: question, attachments: attached.length ? attached.map(a => a.name) : undefined }
@@ -326,8 +372,8 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
   const sessionId = state.chats.find(c => c.id === chatId)?.sessionId
   const cid = chatId
   set(st => ({
-    streamingId: cid,
-    attachments: opts.retry ? st.attachments : [],
+    streamingIds: [...st.streamingIds, cid],
+    attachments: opts.retry ? st.attachments : { ...st.attachments, [attachmentKey]: [] },
     chats: st.chats.map(c => (c.id === cid ? { ...c, updated: Date.now(), messages: [...c.messages, user, bot] } : c))
       .sort((a, b) => b.updated - a.updated),
   }))
@@ -343,7 +389,8 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
     patchMessage(cid, bot.id, m => ({ text: m.text + add }))
   }
 
-  abort = new AbortController()
+  const controller = new AbortController()
+  aborts.set(cid, controller)
   try {
     const patchTool = (match: (t: ToolStep) => boolean, patch: (t: ToolStep) => Partial<ToolStep>): void =>
       patchMessage(cid, bot.id, m => {
@@ -359,6 +406,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
       question: question || 'Look at what I attached.',
       chat_id: cid,
       session_id: sessionId,
+      workspace: state.chats.find(c => c.id === cid)?.cwd || undefined,
       retry: opts.retry || undefined,
       attachments: attached.flatMap(a => (a.path ? [a.path] : [])),
       images: attached.flatMap(a => (a.image ? [a.image] : [])),
@@ -366,7 +414,10 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
       if (e.event !== 'reasoning' && e.event !== 'output') thinking = false
       switch (e.event) {
         case 'session':
-          set(st => ({ chats: st.chats.map(c => (c.id === cid ? { ...c, sessionId: e.data.id } : c)) }))
+          set(st => ({ chats: st.chats.map(c => (c.id === cid ? { ...c, sessionId: e.data.id, cwd: e.data.cwd } : c)) }))
+          break
+        case 'saved':
+          set(st => ({ chats: st.chats.map(c => c.id === cid && c.sessionId === e.data.id ? { ...c, syncedAt: e.data.updated_at } : c) }))
           break
         case 'attached':
           if (e.data.problems.length) toast(`Not attached: ${e.data.problems.join('; ')}`, 'error')
@@ -415,6 +466,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
           break
         case 'usage':
           patchMessage(cid, bot.id, () => ({ usage: e.data }))
+          set(st => ({ chats: st.chats.map(c => c.id === cid ? { ...c, contextReport: e.data.context_report, lastUsage: e.data } : c) }))
           break
         case 'approval':
           patchTool(t => t.name === e.data.tool && t.output === undefined && !t.approval, () => ({ approval: e.data }))
@@ -430,8 +482,8 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
         case 'error':
           patchMessage(cid, bot.id, () => ({ error: e.data.message }))
           break
-        case 'cwd': // the agent moved to another folder: show it in the top bar
-          void refresh()
+        case 'cwd': // update only the conversation that moved
+          set(st => ({ chats: st.chats.map(c => c.id === cid ? { ...c, cwd: e.data.path } : c) }))
           break
         case 'notice':
           toast(e.data.text)
@@ -439,7 +491,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
         default:
           break
       }
-    }, abort.signal)
+    }, controller.signal)
   } catch (e) {
     if (!(e instanceof DOMException && e.name === 'AbortError')) {
       patchMessage(cid, bot.id, () => ({ error: errorText(e) }))
@@ -459,8 +511,10 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
         approval: t.approval && !t.approval.answer ? { ...t.approval, answer: 'no' as const } : t.approval,
       })),
     }))
-    abort = null
-    set({ streamingId: null })
+    if (aborts.get(cid) === controller) aborts.delete(cid)
+    set(st => ({ streamingIds: st.streamingIds.filter(id => id !== cid) }))
+    const finished = state.chats.find(c => c.id === cid)
+    if (finished?.sessionId && state.currentId !== cid) void updateSidebar(finished.sessionId, { unread: true })
     void loadHistory()
   }
 }
@@ -468,7 +522,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
 /** Asks the last question again. The engine forgets the old answer first. */
 export async function retry(chatId: string, botId: string): Promise<void> {
   const chat = state.chats.find(c => c.id === chatId)
-  if (!chat || state.streamingId) return
+  if (!chat || state.streamingIds.includes(chat.id)) return
   const i = chat.messages.findIndex(m => m.id === botId)
   const question = i > 0 ? chat.messages[i - 1] : undefined
   if (!question || question.role !== 'user' || i !== chat.messages.length - 1) return
@@ -481,8 +535,53 @@ export async function retry(chatId: string, botId: string): Promise<void> {
 }
 
 // ---------------- saved sessions ----------------
+/** Persist organization independently of the conversation's message timestamps. */
+export async function updateSidebar(id: string, changes: SidebarChanges): Promise<void> {
+  try {
+    await api.sidebarSession(id, changes)
+    set(s => ({ history: s.history.map(h => h.id !== id ? h : {
+      ...h,
+      ...(changes.pinned !== undefined ? { pinned: Number(changes.pinned) } : {}),
+      ...(changes.archived !== undefined ? { archived: Number(changes.archived) } : {}),
+      ...(changes.unread !== undefined ? { unread: Number(changes.unread) } : {}),
+      ...(changes.completed !== undefined ? { completed: Number(changes.completed) } : {}),
+      ...(changes.section !== undefined ? { section: changes.section } : {}),
+      ...(changes.position !== undefined ? { position: changes.position } : {}),
+    }) }))
+  } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+}
+
+export async function forkSession(id: string): Promise<void> {
+  try {
+    const fork = await api.forkSession(id)
+    await loadHistory()
+    await openSession(fork)
+    toast('Fork created. Both conversations use the same folder.', 'info')
+  } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error') }
+}
+
 /** Every conversation in the session database: the sidebar's list. */
 const HISTORY_LIMIT = 200 // matches api.sessions
+const syncing = new Set<string>()
+async function syncConversation(id: string): Promise<void> {
+  if (syncing.has(id)) return
+  syncing.add(id)
+  try {
+    const saved = await api.session(id)
+    set(s => ({ chats: s.chats.map(chat => {
+      if (chat.sessionId !== id || s.streamingIds.includes(chat.id) ||
+          chat.syncedAt === undefined || saved.updated_at <= chat.syncedAt) return chat
+      const incoming = turnsToMessages(saved.turns)
+      // Keep live-only details (such as usage and undo controls) for unchanged messages.
+      const messages = incoming.map((m, i) => {
+        const previous = chat.messages[i]
+        return previous && previous.role === m.role && previous.text === m.text ? previous : m
+      })
+      return { ...chat, title: saved.title || 'Untitled', cwd: saved.cwd, updated: saved.updated_at * 1000,
+        syncedAt: saved.updated_at, messages, contextReport: saved.context_report, lastUsage: saved.last_usage ?? undefined }
+    }) }))
+  } catch { /* the next history poll retries */ } finally { syncing.delete(id) }
+}
 export async function loadHistory(): Promise<void> {
   try {
     const history = await api.sessions()
@@ -491,7 +590,7 @@ export async function loadHistory(): Promise<void> {
       // list is complete: a full page may leave out an old conversation that still exists.
       const ids = new Set(history.map(h => h.id))
       const complete = history.length < HISTORY_LIMIT
-      const chats = s.chats.filter(c => !complete || !c.sessionId || ids.has(c.sessionId) || c.id === s.streamingId)
+      const chats = s.chats.filter(c => !complete || !c.sessionId || ids.has(c.sessionId) || s.streamingIds.includes(c.id))
       return {
         history,
         historyLoaded: true,
@@ -499,6 +598,12 @@ export async function loadHistory(): Promise<void> {
         currentId: chats.some(c => c.id === s.currentId) ? s.currentId : null,
       }
     })
+    for (const chat of state.chats) {
+      const row = history.find(h => h.id === chat.sessionId)
+      if (row && !row.working && chat.syncedAt !== undefined && row.updated_at > chat.syncedAt && !state.streamingIds.includes(chat.id)) {
+        void syncConversation(row.id)
+      }
+    }
   } catch { /* the engine is not up yet; refresh() retries */ }
 }
 
@@ -506,38 +611,58 @@ export async function loadHistory(): Promise<void> {
 interface DesktopBridge {
   pickFolder?: () => Promise<string | null>
   pickFiles?: () => Promise<string[]>
+  openSessionWindow?: (id: string) => Promise<boolean>
+  openFolder?: (path: string, target: 'finder' | 'vscode') => Promise<boolean>
   pathForFile?: (file: File) => string
 }
 const desktop = (): DesktopBridge | undefined => (window as unknown as { vesperDesktop?: DesktopBridge }).vesperDesktop
 export const isDesktop = (): boolean => typeof desktop()?.pickFolder === 'function'
 
+export async function openSessionWindow(id: string): Promise<void> {
+  try {
+    if (!await desktop()?.openSessionWindow?.(id)) toast('Could not open a new window.', 'error')
+  } catch (e) { toast(errorText(e), 'error') }
+}
+
+export async function openFolderIn(path: string, target: 'finder' | 'vscode'): Promise<void> {
+  try {
+    if (!await desktop()?.openFolder?.(path, target)) toast(`Could not open this folder in ${target === 'vscode' ? 'VS Code' : 'the file manager'}.`, 'error')
+  } catch (e) { toast(errorText(e), 'error') }
+}
+
 const IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
 
-function addAttachment(a: Omit<Attachment, 'key'>): void {
+function addAttachment(a: Omit<Attachment, 'key'>, target = draftKey(state)): void {
+  target = draftAliases.get(target) ?? target
   set(s => {
-    if (s.attachments.some(x => (a.path && x.path === a.path))) return {}
-    if (s.attachments.length >= 20) { toast('At most 20 attachments per message.', 'error'); return {} }
-    return { attachments: [...s.attachments, { ...a, key: uid() }] }
+    const attachments = s.attachments[target] ?? []
+    if (attachments.some(x => (a.path && x.path === a.path))) return {}
+    if (attachments.length >= 20) { toast('At most 20 attachments per message.', 'error'); return {} }
+    return { attachments: { ...s.attachments, [target]: [...attachments, { ...a, key: uid() }] } }
   })
 }
-export const removeAttachment = (key: string): void => set(s => ({ attachments: s.attachments.filter(a => a.key !== key) }))
+export const removeAttachment = (key: string): void => set(s => ({
+  attachments: { ...s.attachments, [draftKey(s)]: currentAttachments(s).filter(a => a.key !== key) },
+}))
 
-export function attachPath(path: string, kind: Attachment['kind'] = 'file'): void {
-  addAttachment({ name: baseName(path), kind, path })
+export function attachPath(path: string, kind: Attachment['kind'] = 'file', target = draftKey(state)): void {
+  addAttachment({ name: baseName(path), kind, path }, target)
 }
 
 /** Native file picker (several files at once). */
 export async function pickAttachments(): Promise<void> {
+  const target = draftKey(state)
   const paths = await desktop()?.pickFiles?.()
-  for (const p of paths ?? []) attachPath(p, /\.(png|jpe?g|gif|webp)$/i.test(p) ? 'image' : 'file')
+  for (const p of paths ?? []) attachPath(p, /\.(png|jpe?g|gif|webp)$/i.test(p) ? 'image' : 'file', target)
 }
 
 /** Native folder picker; the folder goes with the message as a listing the agent can explore. */
 export async function pickAttachFolder(): Promise<void> {
+  const target = draftKey(state)
   const path = await desktop()?.pickFolder?.()
-  if (path) attachPath(path, 'folder')
+  if (path) attachPath(path, 'folder', target)
 }
 
 const readAsDataUrl = (file: Blob): Promise<string> => new Promise((resolve, reject) => {
@@ -549,17 +674,18 @@ const readAsDataUrl = (file: Blob): Promise<string> => new Promise((resolve, rej
 
 /** Files dropped or pasted into the window. On the desktop they go by path; pasted images by content. */
 export async function attachFiles(files: File[]): Promise<void> {
+  const target = draftKey(state)
   for (const file of files) {
     const path = (() => { try { return desktop()?.pathForFile?.(file) || '' } catch { return '' } })()
     if (path) {
-      attachPath(path, IMAGE_MIME.test(file.type) ? 'image' : file.type === '' && !file.size ? 'folder' : 'file')
+      attachPath(path, IMAGE_MIME.test(file.type) ? 'image' : file.type === '' && !file.size ? 'folder' : 'file', target)
       continue
     }
     if (IMAGE_MIME.test(file.type)) {
       if (file.size > MAX_IMAGE_BYTES) { toast(`${file.name || 'Image'}: images must be under 5 MB.`, 'error'); continue }
       const url = await readAsDataUrl(file)
       const name = file.name && file.name !== 'image.png' ? file.name : `pasted-${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.png`
-      addAttachment({ name, kind: 'image', preview: url, image: { name, mime: file.type, data: url.slice(url.indexOf(',') + 1) } })
+      addAttachment({ name, kind: 'image', preview: url, image: { name, mime: file.type, data: url.slice(url.indexOf(',') + 1) } }, target)
       continue
     }
     toast(`${file.name}: drop files in the desktop app, or use @path in the message.`, 'error')
@@ -580,14 +706,18 @@ export const togglePlan = (): Promise<boolean> =>
 
 /** The user read the plan and said yes: leave plan mode and let the agent do it. */
 export async function runPlan(): Promise<void> {
-  if (state.streamingId) return
-  if (await setAgentMode(beforePlan)) await send('The plan is approved. Carry it out now.')
+  if (currentBusy(state)) return
+  const chatId = state.currentId
+  if (await setAgentMode(beforePlan)) {
+    if (state.currentId !== chatId) { toast('Return to the plan to run it.', 'error'); return }
+    await send('The plan is approved. Carry it out now.')
+  }
 }
 
 /** Puts back the files the agent's latest edits changed in the open chat. */
 export async function undoChanges(): Promise<void> {
   const chat = currentChat(state)
-  if (!chat || state.streamingId) return
+  if (!chat || state.streamingIds.includes(chat.id)) return
   try {
     const paths = await api.undo(chat.id, chat.sessionId)
     if (!paths.length) { toast('Nothing to undo in this chat.'); return }
@@ -603,10 +733,11 @@ export async function undoChanges(): Promise<void> {
 /** Replaces the older turns of the open chat with a summary, to free context. */
 export async function compactChat(): Promise<void> {
   const chat = currentChat(state)
-  if (!chat || state.streamingId) return
+  if (!chat || state.streamingIds.includes(chat.id)) return
   toast('Summarizing the conversation…')
   try {
     const r = await api.compact(chat.id, chat.sessionId)
+    if (r.context_report) set(s => ({ chats: s.chats.map(c => c.id === chat.id ? { ...c, contextReport: r.context_report } : c) }))
     toast(r.compacted ? `Older turns are now a summary (about ${r.before} → ${r.context} tokens).` : 'Nothing to summarize yet.')
   } catch (e) {
     toast(errorText(e), 'error')

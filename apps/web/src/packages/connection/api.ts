@@ -67,7 +67,16 @@ export interface SavedSession {
   created_at: number
   updated_at: number
   messages?: number
+  pinned: number
+  archived: number
+  unread: number
+  completed: number
+  section: string
+  position: number
+  working?: boolean
 }
+
+export type SidebarChanges = Partial<{ pinned: boolean; archived: boolean; unread: boolean; completed: boolean; section: string; position: number }>
 
 export type TurnPart =
   | { type: 'reasoning'; text: string }
@@ -89,6 +98,17 @@ export interface Permissions {
   safe: string[]
 }
 
+export interface ContextReport {
+  used: number
+  window: number
+  window_source: 'documented' | 'requested' | 'assumed'
+  provider: string
+  model: string
+  history: number
+  history_budget: number
+  breakdown: { instructions: number; tools: number; conversation: number; tool_results: number; summary: number }
+}
+
 export interface Usage {
   input: number
   output: number
@@ -97,6 +117,8 @@ export interface Usage {
   seconds: number
   tools: number
   estimated?: boolean
+  context_report?: ContextReport
+  last_call?: { input: number; output: number; estimated: boolean } | null
 }
 
 export type StreamEvent =
@@ -104,6 +126,7 @@ export type StreamEvent =
   | { event: 'error'; data: { message: string } }
   | { event: 'attached'; data: { names: string[]; problems: string[] } }
   | { event: 'session'; data: { id: string; cwd: string } }
+  | { event: 'saved'; data: { id: string; updated_at: number } }
   | { event: 'reasoning'; data: { text: string } }
   | { event: 'tool_draft'; data: { name: string; chars: number } }
   | { event: 'tool_start'; data: { id: string | null; name: string; args: Record<string, unknown> } }
@@ -180,9 +203,9 @@ export const api = {
   forgetChat: async (chatId: string): Promise<void> => {
     await request(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
   },
-  sessions: async (): Promise<SavedSession[]> =>
-    ((await (await request('/api/sessions?limit=200')).json()) as { sessions: SavedSession[] }).sessions,
-  session: async (id: string): Promise<SavedSession & { turns: Turn[] }> =>
+  sessions: async (query = ''): Promise<SavedSession[]> =>
+    ((await (await request(`/api/sessions?limit=200${query ? `&q=${encodeURIComponent(query)}` : ''}`)).json()) as { sessions: SavedSession[] }).sessions,
+  session: async (id: string): Promise<SavedSession & { turns: Turn[]; context_report?: ContextReport; last_usage?: Usage | null }> =>
     (await request(`/api/sessions/${encodeURIComponent(id)}`)).json(),
   deleteSession: async (id: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -190,15 +213,19 @@ export const api = {
   renameSession: async (id: string, title: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: 'POST', json: { title } })
   },
-  /** Stops a running answer in the engine (ends its command, refuses further tools). */
-  stopChat: async (chatId: string): Promise<void> => {
-    await request(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: 'POST' })
+  sidebarSession: async (id: string, changes: SidebarChanges): Promise<void> => {
+    await request(`/api/sessions/${encodeURIComponent(id)}/sidebar`, { method: 'POST', json: changes })
   },
+  forkSession: async (id: string): Promise<string> =>
+    ((await (await request(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: 'POST' })).json()) as { id: string }).id,
+  /** Stops a running answer in the engine (ends its command, refuses further tools). */
+  stopChat: async (chatId: string): Promise<boolean> =>
+    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: 'POST' })).json()) as { stopped: boolean }).stopped,
   /** Puts back the files the agent's latest edits changed. */
   undo: async (chatId: string, sessionId?: string): Promise<string[]> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[] }).paths,
   /** Replaces the older turns of a chat with a summary. */
-  compact: async (chatId: string, sessionId?: string): Promise<{ compacted: boolean; before: number; context: number }> =>
+  compact: async (chatId: string, sessionId?: string): Promise<{ compacted: boolean; before: number; context: number; context_report?: ContextReport }> =>
     (await request(`/api/chats/${encodeURIComponent(chatId)}/compact`, { method: 'POST', json: { session_id: sessionId } })).json(),
   permissions: async (): Promise<Permissions> => (await request('/api/permissions')).json(),
   removePermission: async (kind: 'commands' | 'hosts', rule: string): Promise<Permissions> =>
@@ -207,7 +234,7 @@ export const api = {
   /** Streams one answer. Calls onEvent for each event; resolves when the stream ends. */
   async chat(
     body: {
-      question: string; chat_id: string; session_id?: string
+      question: string; chat_id: string; session_id?: string; workspace?: string
       attachments?: string[]; images?: ImageUpload[]; retry?: boolean
     },
     onEvent: (e: StreamEvent) => void,

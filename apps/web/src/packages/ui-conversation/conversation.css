@@ -35,7 +35,7 @@
 .user-col .bubble { max-width: 100%; }
 .sent-attachments { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .msg.user .bubble {
-  max-width: 78%; padding: 10px 16px; border-radius: 20px 20px 6px 20px;
+  max-width: 100%; box-sizing: border-box; padding: 10px 16px; border-radius: 20px 20px 6px 20px;
   background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .msg .prompt { display: none; }

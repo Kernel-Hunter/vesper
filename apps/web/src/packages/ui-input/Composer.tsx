@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react'
 import {
-  attachFiles, COMMANDS, currentChat, isDesktop, openSettings, pickAttachFolder, pickAttachments, pickFolder, removeAttachment,
-  runCommand, send, stop, togglePlan, useStore,
+  attachFiles, COMMANDS, currentAttachments, currentBusy, currentChat, currentDraft, currentRemoteBusy, isDesktop, openSettings, pickAttachFolder, pickAttachments, pickFolder, removeAttachment,
+  runCommand, saveSettings, send, setDraft, stop, togglePlan, useStore,
 } from '../store/store'
 import { Icon, type IconName } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
+import { effortLabel, effortSupport } from '../ui-model-selection/effort'
+import type { Thinking } from '../connection/api'
 import { useDictation } from './useDictation'
 import { formatBytes } from './dictationProgress'
 
@@ -41,18 +43,21 @@ function AddMenu({ onClose }: { onClose: () => void }) {
 }
 
 export function Composer() {
-  const [text, setText] = useState('')
+  const text = useStore(currentDraft)
+  const setText = setDraft
   const [picker, setPicker] = useState(false)
   const [adding, setAdding] = useState(false)
   const [cmdIndex, setCmdIndex] = useState(0)
   const ref = useRef<HTMLTextAreaElement>(null)
-  const streaming = useStore(s => s.streamingId !== null)
+  const streaming = useStore(currentBusy)
+  const remoteBusy = useStore(currentRemoteBusy)
   const settings = useStore(s => s.server?.settings)
   const providers = useStore(s => s.server?.providers)
-  const attachments = useStore(s => s.attachments)
+  const attachments = useStore(currentAttachments)
   const chatId = useStore(s => currentChat(s)?.id ?? null)
+  const draftId = useStore(s => s.currentId ?? s.newDraftId)
   const theme = useStore(s => s.appearance.theme)
-  const dictation = useDictation(chatId, spoken => {
+  const dictation = useDictation(draftId, spoken => {
     setText(previous => previous + (previous && !/\s$/.test(previous) ? ' ' : '') + spoken)
     ref.current?.focus()
   })
@@ -60,6 +65,7 @@ export function Composer() {
   const provider = providers?.find(p => p.id === settings?.provider)
   const model = settings?.model || provider?.chat_model || ''
   const mode = settings?.agent_mode ?? 'ask'
+  const effort = effortSupport(settings?.provider ?? '', model)
 
   // Slash commands: suggestions while the message is a single /word.
   const slash = /^\/\S*$/.test(text) ? COMMANDS.filter(c => c.name.startsWith(text.toLowerCase())) : []
@@ -85,7 +91,7 @@ export function Composer() {
   const submit = (): void => {
     const q = text.trim()
     if ((!q && !attachments.length) || streaming || q.length > MAX_LEN || dictation.phase !== 'idle') return
-    if (q.startsWith('/') && runCommand(q)) { setText(''); return }
+    if (q.startsWith('/') && runCommand(q)) { setText('', draftId); return }
     setText('')
     void send(q)
   }
@@ -169,6 +175,7 @@ export function Composer() {
             </div>
           ) : <div className="dictation-status" role="status">Loading speech model…</div>
         )}
+        {remoteBusy && <div className="dictation-status" role="status">This conversation is working in another window. You can send when it finishes.</div>}
         <div className="composer-bar">
           <div className="composer-left">
             <button type="button" className={`icon-btn add-btn${adding ? ' on' : ''}`} onClick={() => setAdding(a => !a)}
@@ -180,6 +187,16 @@ export function Composer() {
               <span className="chip-label">{provider ? `${provider.label} · ${model}` : 'Choose model'}</span>
               <Icon name="chevron" size={13} />
             </button>
+            <label className="effort-control" title={`${effortLabel[effort]}. ${effort === 'unknown' ? 'You can try a level, but the provider may reject or ignore it.' : effort === 'unavailable' ? 'This model or adapter does not expose adjustable levels in Vesper.' : 'Changes the global setting for future requests.'}`}>
+              <span>Effort{effort === 'unknown' ? ' ?' : ''}</span>
+              <select aria-label={`Reasoning effort: ${effortLabel[effort]}`} value={effort === 'unavailable' ? 'unavailable' : settings?.thinking ?? 'off'}
+                disabled={!settings || streaming || effort === 'unavailable'}
+                onChange={e => void saveSettings({ thinking: e.target.value as Thinking })}>
+                {effort === 'unavailable' && <option value="unavailable">N/A</option>}
+                <option value="off">Default</option><option value="low">Low</option>
+                <option value="medium">Medium</option><option value="high">High</option>
+              </select>
+            </label>
             <button type="button" className={`chip-btn${mode === 'yolo' ? ' warn' : ''}`} onClick={() => openSettings('agent')} title="What Vesper may do without asking">
               <Icon name={mode === 'yolo' ? 'warn' : 'shield'} size={14} />
               <span className="chip-label">{MODE_LABEL[mode]}</span>
@@ -202,7 +219,7 @@ export function Composer() {
             </button>
             {tooLong && <span className="count err">{text.length}/{MAX_LEN}</span>}
             {streaming ? (
-              <button type="button" className="send stop" onClick={stop} aria-label="Stop" title="Stop (Esc)">
+              <button type="button" className="send stop" onClick={stop} disabled={remoteBusy} aria-label={remoteBusy ? 'Working in another window' : 'Stop'} title={remoteBusy ? 'Stop the response in its window' : 'Stop (Esc)'}>
                 <span className="stop-square" />
               </button>
             ) : (

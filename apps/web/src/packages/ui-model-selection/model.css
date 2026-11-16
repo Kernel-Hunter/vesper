@@ -22,7 +22,9 @@
 .picker-search input { flex: 1; border: 0; outline: 0; background: none; font-size: 13.5px; color: var(--text); min-width: 0; }
 .picker-list { flex: 1; overflow-y: auto; padding: 6px; }
 .picker-model { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: var(--r-sm); font: 12.5px/1.3 var(--mono); color: var(--text-2); text-align: left; }
-.picker-model span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-model span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-effort { flex: none; color: var(--text-3); font: 11px var(--font); }
+.picker-effort.supported { color: var(--accent); }
 .picker-model:hover { background: var(--layer-2); color: var(--text); }
 .picker-model.active { color: var(--accent); }
 .picker-empty { color: var(--text-3); font-size: 13px; padding: 12px; margin: 0; }

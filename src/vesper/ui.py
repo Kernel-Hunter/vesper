@@ -108,7 +108,11 @@ def model_label(cfg: dict) -> str:
 
 
 def fmt_tokens(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+    for size, suffix in ((10**12, "T"), (10**9, "B"), (10**6, "M"), (1000, "K")):
+        if n >= size:
+            value = n / size
+            return f"{value:.2f}".rstrip("0").rstrip(".") + suffix
+    return str(n)
 
 
 def fmt_duration(seconds: float) -> str:
@@ -232,7 +236,7 @@ def turn_footer(usage: dict, context_tokens: int) -> Text:
     cached = f" ({fmt_tokens(usage['cached'])} cached)" if usage.get("cached") else ""
     parts.append(f"{approx}{fmt_tokens(usage['input'])} in{cached}, {approx}{fmt_tokens(usage['output'])} out")
     if context_tokens:
-        parts.append(f"context {min(100, round(100 * usage['context'] / context_tokens))}%")
+        parts.append(f"context ~{round(100 * usage['context'] / context_tokens)}%")
     return Text("  ✓ " + " · ".join(parts), style=MUTED)
 
 

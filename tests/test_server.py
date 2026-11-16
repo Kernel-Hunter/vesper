@@ -11,6 +11,13 @@ def _events(text):
     return out
 
 
+def test_step_limit_has_a_clear_recovery_message(server):
+    from langgraph.errors import GraphRecursionError
+
+    message = server.friendly_error(GraphRecursionError("Recursion limit reached"), "groq")
+    assert "step limit" in message and "continue" in message and "Review" in message
+
+
 def test_token_required(client):
     assert client.get("/api/state", headers={"X-Token": "wrong"}).status_code == 401
 

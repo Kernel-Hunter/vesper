@@ -6,8 +6,7 @@ import { TOOL_VERBS, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { renderMarkdown } from './markdown'
-
-const count = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+import { tokenCount as count } from '../ui-layout/context'
 const seconds = (s: number): string => (s < 60 ? `${s < 10 ? s.toFixed(1) : Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`)
 
 /** The model's thinking. Open while it is being written and in transcript view, one line otherwise. */
@@ -66,7 +65,7 @@ function UserMessage({ msg }: { msg: Msg }) {
 function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boolean }) {
   const transcript = useStore(s => s.transcript)
   const planning = useStore(s => s.server?.settings.agent_mode === 'plan')
-  const busy = useStore(s => s.streamingId !== null)
+  const busy = useStore(s => s.streamingIds.includes(chatId))
   const edited = !msg.undone && msg.tools.some(t => (t.name === 'edit_file' || t.name === 'write_file') && t.ok)
   // Text, thinking and tool calls in the order they happened.
   const parts = useMemo(() => {

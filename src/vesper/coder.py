@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import re
 import time
 from collections.abc import Iterator
@@ -42,7 +43,7 @@ from vesper.prompts import COMPACT_PROMPT, agent_system_prompt
 from vesper.store import Store, new_id
 from vesper.workspace import Workspace
 
-RECURSION_LIMIT = 120            # model and tool steps per question
+RECURSION_LIMIT = 240            # finite safeguard on model and tool steps per question
 DEFAULT_CONTEXT_TOKENS = 120_000  # assumed context window when the provider does not say
 HISTORY_SHARE = 0.6              # part of the window the history may fill; the rest is prompt, tools and the answer
 CHARS_PER_TOKEN = 3.5            # rough, on the safe side for code
@@ -193,6 +194,39 @@ def _size(m: BaseMessage) -> int:
     return len(text_of(m.content)) + sum(len(str(c.get("args", ""))) + 40 for c in (getattr(m, "tool_calls", None) or []))
 
 
+def context_report(messages: list[BaseMessage], workspace: Workspace, provider: str = "", model: str = "",
+                   window: int | None = None) -> dict:
+    """Estimate the retained text, prompt and tool schemas for the next model call.
+
+    This is not a tokenizer or a provider count: image, protocol and hidden reasoning tokens
+    vary by provider. Only aggregate sizes leave the engine, never instructions or schemas.
+    """
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    from vesper import providers as prov
+
+    known_window, source = prov.context_window(provider, model)
+    if window is not None and window != known_window:
+        source = "assumed"
+    window = window if window is not None else known_window
+    chars = {"instructions": len(agent_system_prompt(workspace.root, workspace.mode == "plan")),
+             "tools": len(json.dumps([convert_to_openai_tool(t) for t in workspace.tools()], ensure_ascii=False)),
+             "conversation": 0, "tool_results": 0, "summary": 0}
+    for message in messages:
+        if isinstance(message, HumanMessage) and text_of(message.content).startswith(SUMMARY_OPEN):
+            key = "summary"
+        elif isinstance(message, ToolMessage):
+            key = "tool_results"
+        else:
+            key = "conversation"
+        chars[key] += _size(message)
+    breakdown = {key: math.ceil(value / CHARS_PER_TOKEN) for key, value in chars.items()}
+    history = sum(breakdown[k] for k in ("conversation", "tool_results", "summary"))
+    return {"used": sum(breakdown.values()), "window": window, "window_source": source,
+            "provider": provider, "model": model or (prov.PROVIDERS[provider].chat_model if provider in prov.PROVIDERS else ""),
+            "history": history, "history_budget": int(window * HISTORY_SHARE), "breakdown": breakdown}
+
+
 def _shorter(m: ToolMessage, body: str) -> ToolMessage:
     return ToolMessage(content=body, tool_call_id=m.tool_call_id, name=m.name, id=m.id, status=m.status)
 
@@ -324,6 +358,18 @@ def repair_tool_calls(msg: AIMessage, names: set[str]) -> AIMessage | None:
                      response_metadata=msg.response_metadata)
 
 
+def embedded_tool_example(msg: AIMessage, names: set[str]) -> bool:
+    """Detect a tool-shaped JSON example in prose without executing it."""
+    if msg.tool_calls:
+        return False
+    _, text = split_thinking(text_of(msg.content))
+    for blob in re.findall(r"```(?:json)?\s*(.*?)\s*```", text, re.S | re.I):
+        data = _loose_json(blob)
+        if any(_call_from(item, names) for item in (data if isinstance(data, list) else [data])):
+            return True
+    return False
+
+
 def _render(messages: list[BaseMessage]) -> str:
     """A conversation as plain text for the summarizer, with long parts cut."""
     lines = []
@@ -446,14 +492,27 @@ class Session:
                     if fixed is None or _heal == 3:
                         raise
                     session._llm, session._agent = fixed, None
+            example_retry = False
             for _attempt in range(2):
                 msg = response if isinstance(response, AIMessage) else next(
                     (m for m in reversed(getattr(response, "result", [])) if isinstance(m, AIMessage)), None)
                 if msg is None:
                     return response
+                if example_retry:
+                    # Never turn the second response's text into a tool call: it might be an example.
+                    if not msg.tool_calls:
+                        session._pending.append(("notice", {"text": "The model showed a tool call as text; it was not executed."}))
+                    return response
                 fixed = repair_tool_calls(msg, names)
                 if fixed is not None:
                     return fixed
+                if not _attempt and embedded_tool_example(msg, names):
+                    example_retry = True
+                    hint = ("Your previous reply displayed a tool call as text. If the user requested actual work, "
+                            "invoke the appropriate tool using the tool-calling interface. If they requested only "
+                            "an example or explanation, answer in text and do not execute it.")
+                    response = handler(request.override(messages=[*request.messages, HumanMessage(hint)]))
+                    continue
                 broken = bool(msg.invalid_tool_calls) or not (msg.tool_calls or text_of(msg.content).strip() or reasoning_of(msg))
                 if not broken or _attempt:
                     return response
@@ -709,20 +768,38 @@ class Session:
         return {}
 
     def _usage(self, final: list[BaseMessage], sent: int, started: float, tools: int) -> dict:
-        """Tokens of this turn. Providers that report none get an estimate from the text length."""
-        new = [m for m in final[sent:] if isinstance(m, AIMessage)]
-        inp = sum((m.usage_metadata or {}).get("input_tokens", 0) for m in new)
-        out = sum((m.usage_metadata or {}).get("output_tokens", 0) for m in new)
-        cached = sum(((m.usage_metadata or {}).get("input_token_details") or {}).get("cache_read", 0) or 0 for m in new)
-        estimated = not (inp or out)
-        if estimated:
-            out = int(sum(_size(m) for m in new) / CHARS_PER_TOKEN)
-            inp = int(sum(_size(m) for m in final[:sent]) / CHARS_PER_TOKEN)
-        last = (new[-1].usage_metadata or {}) if new else {}
-        context = last.get("input_tokens", 0) + last.get("output_tokens", 0) or int(sum(map(_size, final)) / CHARS_PER_TOKEN)
+        """Sum each model call, estimating only the fields a provider did not report."""
+        report = context_report(self.history, self.workspace, self.provider, self.model, self.context_tokens)
+        # The graph may have trimmed messages; a stale positional offset can miss model calls.
+        start = next((i + 1 for i in range(len(final) - 1, -1, -1) if isinstance(final[i], HumanMessage)), sent)
+        inp = out = cached = 0
+        estimated = False
+        last_call = None
+        overhead = report["breakdown"]["instructions"] + report["breakdown"]["tools"]
+        for i in range(start, len(final)):
+            m = final[i]
+            if not isinstance(m, AIMessage):
+                continue
+            usage = m.usage_metadata or {}
+            if "input_tokens" in usage:
+                call_input = usage["input_tokens"] or 0
+            else:
+                call_input = overhead + math.ceil(sum(map(_size, final[:i])) / CHARS_PER_TOKEN)
+                estimated = True
+            if "output_tokens" in usage:
+                call_output = usage["output_tokens"] or 0
+            else:
+                call_output = math.ceil(_size(m) / CHARS_PER_TOKEN)
+                estimated = True
+            inp += call_input
+            out += call_output
+            cached += ((usage.get("input_token_details") or {}).get("cache_read", 0) or 0)
+            last_call = {"input": call_input, "output": call_output,
+                         "estimated": "input_tokens" not in usage or "output_tokens" not in usage}
         self.tokens["input"] += inp
         self.tokens["output"] += out
         self.tokens["cached"] += cached
-        self.tokens["context"] = context
-        return {"input": inp, "output": out, "cached": cached, "context": context, "estimated": estimated,
+        self.tokens["context"] = report["used"]
+        return {"input": inp, "output": out, "cached": cached, "context": report["used"], "estimated": estimated,
+                "context_report": report, "last_call": last_call,
                 "seconds": round(time.monotonic() - started, 1), "tools": tools}

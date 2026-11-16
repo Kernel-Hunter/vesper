@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { currentChat, folderName, pickFolder, send, useStore } from '../store/store'
+import { currentBusy, currentChat, folderName, pickFolder, send, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { Message } from './Message'
@@ -49,7 +49,7 @@ function Empty() {
 
 export function Thread() {
   const chat = useStore(currentChat)
-  const streaming = useStore(s => s.streamingId)
+  const streaming = useStore(currentBusy)
   const ref = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [showJump, setShowJump] = useState(false)

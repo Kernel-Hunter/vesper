@@ -145,7 +145,7 @@ export function Effects() {
   const appearance = useStore(s => s.appearance)
   const effect = activeEffect(appearance)
   if (effect === 'none') return null
-  const themeKey = `${resolvedTheme(appearance.theme)}-${appearance.phosphor}`
+  const themeKey = `${resolvedTheme(appearance.theme)}-${appearance.phosphor}-${appearance.accent}-${appearance.customAccent}`
   return (
     <div className={`fx fx-layer-${effect}`} aria-hidden="true">
       {effect === 'aurora' && <><span className="blob b1" /><span className="blob b2" /><span className="blob b3" /></>}

@@ -62,6 +62,19 @@ def test_files_folders_and_images_reach_the_model_once(engine):
     assert first == {"role": "user", "text": "look", "attachments": ["notes.md", "pkg", "shot.png", "clip.png"]}
 
 
+def test_context_report_and_last_usage_survive_reopening(engine, client, server):
+    events = list(engine.stream_answer('hello', 'context-chat', []))
+    sid = next(data['id'] for event, data in events if event == 'session')
+    usage = next(data for event, data in events if event == 'usage')
+    assert usage['context_report']['used'] > usage['context_report']['history']
+    app = client.__class__(server.create_app('t', engine))
+    app.headers['X-Token'] = 't'
+    saved = app.get(f'/api/sessions/{sid}').json()
+    assert saved['context_report']['used'] == usage['context_report']['used']
+    assert saved['last_usage']['input'] == usage['input']
+    assert saved['last_usage']['output'] == usage['output']
+
+
 def test_retry_forgets_the_last_answer(engine):
     list(engine.stream_answer("first", "c2", []))
     list(engine.stream_answer("second", "c2", []))
@@ -82,6 +95,51 @@ def test_rename_and_delete_reach_the_database(engine, client, server):
     assert app_client.delete(f"/api/sessions/{sid}").status_code == 404          # not silently ok
     assert app_client.delete("/api/sessions/not-an-id").status_code == 400
     assert app_client.post("/api/chats/c3/stop").json() == {"stopped": False}   # nothing running
+
+
+def test_history_search_returns_matching_session_metadata(engine, client, server):
+    first = list(engine.stream_answer("a distinctive question", "search-first", []))
+    sid = next(d for e, d in first if e == "session")["id"]
+    list(engine.stream_answer("another chat", "search-second", []))
+    app = client.__class__(server.create_app("t", engine))
+    app.headers["X-Token"] = "t"
+    found = app.get("/api/sessions", params={"q": "DISTINCTIVE"}).json()["sessions"]
+    assert [row["id"] for row in found] == [sid]
+    assert "turns" not in found[0] and "messages" in found[0]
+    assert app.get("/api/sessions", params={"q": "x" * 201}).status_code == 400
+
+
+def test_sidebar_metadata_and_fork_persist_without_copying_undo(engine, client, server):
+    events = list(engine.stream_answer("hello", "original", []))
+    sid = next(d for e, d in events if e == "session")["id"]
+    db = engine.history_db()
+    db.add_checkpoint(sid, 1, "/example", b"old")
+    app = client.__class__(server.create_app("t", engine))
+    app.headers["X-Token"] = "t"
+    url = f"/api/sessions/{sid}/sidebar"
+    changes = {"pinned": True, "unread": True, "completed": True, "section": "Projects", "position": 2}
+    assert app.post(url, json=changes).status_code == 200
+    row = next(r for r in app.get("/api/sessions").json()["sessions"] if r["id"] == sid)
+    assert all(row[k] == v for k, v in changes.items())
+    for bad in ({"pinned": 1}, {"section": "bad\nname"}, {"position": -1}, {"unknown": True}):
+        assert app.post(url, json=bad).status_code == 400
+    fork = app.post(f"/api/sessions/{sid}/fork")
+    assert fork.status_code == 200
+    fork_id = fork.json()["id"]
+    assert fork_id != sid
+    assert db.load_messages(fork_id) == db.load_messages(sid)
+    assert db.checkpoints(fork_id) == []
+    assert db.get_session(fork_id)["cwd"] == db.get_session(sid)["cwd"]
+    assert app.post(url, json={"archived": True}).status_code == 200
+    assert next(r for r in engine.saved_sessions() if r["id"] == sid)["archived"] == 1
+    from vesper.store import Store
+    with_store = Store(db.path)
+    try:
+        row = next(r for r in with_store.list_sessions() if r["id"] == sid)
+        assert row["pinned"] == row["archived"] == row["unread"] == 1
+        assert row["section"] == "Projects"
+    finally:
+        with_store.close()
 
 
 def test_stop_ends_a_running_command(engine, server, monkeypatch):
@@ -123,3 +181,85 @@ def test_settings_saved_by_the_terminal_are_seen(engine, server):
     engine.update({"agent_mode": "plan"})
     saved = json.loads(cfg.read_text())
     assert (saved["provider"], saved["model"], saved["agent_mode"]) == ("groq", "llama-x", "plan")
+
+
+def test_parallel_chats_keep_folders_and_stop_independent(engine, server, client, tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+
+    from vesper.coder import Session
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    started = {str(first): threading.Event(), str(second): threading.Event()}
+    release = threading.Event()
+
+    def ask(self, question, **kwargs):
+        folder = str(self.workspace.root)
+        started[folder].set()
+        assert release.wait(10)
+        yield "token", {"text": question}
+
+    monkeypatch.setattr(Session, "ask", ask)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        one = pool.submit(lambda: list(engine.stream_answer("one", "one", workspace=str(first))))
+        assert started[str(first)].wait(5)
+        engine.update({"workspace": str(second)})
+        two = pool.submit(lambda: list(engine.stream_answer("two", "two", workspace=str(second))))
+        try:
+            assert started[str(second)].wait(5), "second chat did not start while the first was running"
+            assert engine._sessions["one"]["session"].workspace.root == first
+            assert engine._sessions["two"]["session"].workspace.root == second
+            busy = list(engine.stream_answer("duplicate", "one"))
+            assert any(event == "error" for event, _ in busy)
+            sid = engine._sessions["one"]["session"].id
+            engine.history_db().create_session(first, session_id=sid)
+            engine.history_db().save_messages(sid, [HumanMessage("saved")])
+            assert next(row for row in engine.saved_sessions() if row["id"] == sid)["working"] is True
+            alias = list(engine.stream_answer("duplicate", "other-window", session_id=sid))
+            assert any(event == "error" for event, _ in alias)
+            app = client.__class__(server.create_app("t", engine))
+            app.headers["X-Token"] = "t"
+            assert app.post(f"/api/sessions/{sid}/fork").status_code == 409
+            with pytest.raises(server.HTTPException) as error:
+                engine.delete_saved_session(sid)
+            assert error.value.status_code == 409
+            assert engine.stop_chat("one")
+            assert not engine._sessions["two"]["stop"] is engine._sessions["one"]["stop"]
+        finally:
+            release.set()
+        one_events = one.result(timeout=10)
+        assert not any(e == "token" for e, _ in one_events)
+        assert any(e == "saved" and d["id"] == sid and d["updated_at"] > 0 for e, d in one_events)
+        assert next(row for row in engine.saved_sessions() if row["id"] == sid)["working"] is False
+        assert ("token", {"text": "two"}) in two.result(timeout=10)
+
+
+def test_stopping_one_chat_refuses_its_pending_approval(engine, monkeypatch):
+    import concurrent.futures
+    import threading
+
+    from vesper.coder import Session
+
+    waiting = threading.Event()
+    answers = []
+
+    def ask(self, question, **kwargs):
+        waiting.set()
+        answers.append(self.workspace.approve({"kind": "run", "command": "example"}))
+        yield "done", {}
+
+    monkeypatch.setattr(Session, "ask", ask)
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        result = pool.submit(lambda: list(engine.stream_answer("ask", "approval")))
+        assert waiting.wait(5)
+        # Wait for the approval slot, not just the worker reaching the callback.
+        import time
+        deadline = time.monotonic() + 5
+        while not engine._approvals and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert engine._approvals
+        assert engine.stop_chat("approval")
+        result.result(timeout=5)
+    assert answers == ["no"]

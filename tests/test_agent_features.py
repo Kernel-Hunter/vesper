@@ -313,6 +313,34 @@ def test_a_small_model_that_writes_its_calls_as_text_still_works(proj):
     assert isinstance(s.history[2], ToolMessage) and s.history[-1].content == "It greets."
 
 
+def test_a_narrated_tool_example_is_retried_as_a_real_call(proj):
+    example = 'I will update it:\n```json\n{"name":"write_file","arguments":{"path":"notes.txt","content":"new"}}\n```\nHere is the call.'
+    ws = Workspace(proj, mode="yolo")
+    s = Session(fake(AIMessage(example), call("write_file", path="notes.txt", content="new"), AIMessage("Done.")), ws)
+    events = list(s.ask("Create notes.txt"))
+    assert (proj / "notes.txt").read_text() == "new"
+    assert any(e == "tool_end" and d["name"] == "write_file" and d["ok"] for e, d in events)
+
+
+def test_a_tool_example_is_never_executed_from_the_retried_text(proj):
+    example = 'Example:\n```json\n{"name":"write_file","arguments":{"path":"notes.txt","content":"new"}}\n```'
+    s = Session(fake(AIMessage(example), AIMessage(example)), Workspace(proj, mode="yolo"))
+    events = list(s.ask("Show me an example of a write_file call"))
+    assert not (proj / "notes.txt").exists()
+    assert not any(e == "tool_end" for e, _ in events)
+    assert any(e == "notice" and "not executed" in d["text"] for e, d in events)
+
+
+def test_a_standalone_json_example_from_the_retry_is_not_executed(proj):
+    example = 'Example:\n```json\n{"name":"write_file","arguments":{"path":"notes.txt","content":"new"}}\n```'
+    bare = '{"name":"write_file","arguments":{"path":"notes.txt","content":"new"}}'
+    s = Session(fake(AIMessage(example), AIMessage(bare)), Workspace(proj, mode="yolo"))
+    events = list(s.ask("Show an example"))
+    assert not (proj / "notes.txt").exists()
+    assert not any(e == "tool_end" for e, _ in events)
+    assert any(e == "notice" and "not executed" in d["text"] for e, d in events)
+
+
 def test_an_empty_reply_is_asked_for_again(proj):
     s = Session(fake(AIMessage(""), AIMessage("Here you go.")), Workspace(proj))
     assert "Here you go." in "".join(d["text"] for e, d in s.ask("hello") if e == "token")

@@ -24,6 +24,7 @@ const PATHS = {
   external: 'M8 4H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3M11 4h5v5M16 4l-7 7',
   edit: 'M4 16h3l9-9-3-3-9 9zM12 5l3 3',
   terminal: 'M4 5l4 5-4 5M10 15h6',
+  code: 'M7 5L3 10l4 5M13 5l4 5-4 5',
   bolt: 'M11 2L4 11h5l-1 7 7-9h-5z',
   folder: 'M3 6a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z',
   shield: 'M10 2.5l6 2.5v4.5c0 3.8-2.6 6.6-6 8-3.4-1.4-6-4.2-6-8V5z',

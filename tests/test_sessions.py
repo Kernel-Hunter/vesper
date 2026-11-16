@@ -42,6 +42,26 @@ def proj(tmp_path):
 
 
 # ---------------------------------------------------------------- the store
+def test_sidebar_upgrade_preserves_existing_history(tmp_path):
+    path = tmp_path / "old.db"
+    old = Store(path)
+    sid = old.create_session(tmp_path, title="Existing")
+    old.save_messages(sid, [HumanMessage("hello"), AIMessage("hi")])
+    old.close()
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE session_sidebar")
+        db.execute("PRAGMA user_version=2")
+    upgraded = Store(path)
+    try:
+        assert [m.content for m in upgraded.load_messages(sid)] == ["hello", "hi"]
+        row = upgraded.list_sessions()[0]
+        assert row["id"] == sid and not row["pinned"] and not row["archived"]
+        upgraded.update_sidebar(sid, {"pinned": True})
+        assert upgraded.list_sessions()[0]["pinned"] == 1
+    finally:
+        upgraded.close()
+
+
 def test_store_roundtrip(store, tmp_path):
     sid = store.create_session(tmp_path, "ollama", "qwen", "terminal", title="first  question\nhere")
     assert store.list_sessions() == []  # no messages yet: not listed
@@ -63,6 +83,22 @@ def test_store_roundtrip(store, tmp_path):
     assert event["ok"] is True and event["ms"] == 12 and len(event["detail"]["output"]) < 21_000
     store.delete_session(sid)
     assert store.get_session(sid) is None and store.events(sid) == [] and store.load_messages(sid) == []
+
+
+def test_search_sessions_matches_saved_conversation_text_without_tool_results(store, tmp_path):
+    first = store.create_session(tmp_path / "alpha", title="First")
+    second = store.create_session(tmp_path / "beta", title="Second")
+    store.save_messages(first, [HumanMessage("Find the unusual zipper"), AIMessage("Solved 100% of it")])
+    store.save_messages(second, [HumanMessage("Other question"), call("read_file"),
+                                 ToolMessage("hidden tool output", tool_call_id="c1")])
+    ids = lambda q: {r["id"] for r in store.list_sessions(200, query=q)}  # noqa: E731
+    assert ids("ZIPPER") == {first}
+    assert ids("100%") == {first}
+    assert ids("%") == {first}  # not a SQL wildcard
+    assert ids("second") == {second}
+    assert ids("alpha") == {first}
+    assert ids("hidden tool output") == set()
+    assert store.list_sessions(200, cwd=tmp_path / "beta", query="zipper") == []
 
 
 def test_store_is_a_plain_sqlite_file(store, tmp_path):
@@ -322,16 +358,16 @@ def test_engine_folder_follows_the_agent_and_saves_history(server, tmp_path, mon
     events = list(engine.stream_answer("go into sub", "chat-a", []))
     sub = str((proj / "sub").resolve())
     assert ("cwd", {"path": sub}) in events and events[-1][0] == "done"
-    assert engine.settings["workspace"] == sub            # the app's folder chip follows the agent
+    assert engine.settings["workspace"] == str(proj)     # other chats keep their chosen default
     list(engine.stream_answer("where are we?", "chat-a", []))
     session = engine._sessions["chat-a"]["session"]
     assert str(session.workspace.root) == sub and len(session.history) == 6
     rows = engine.history_db().list_sessions()
     assert rows and rows[0]["source"] == "desktop" and rows[0]["cwd"] == sub
-    engine.update({"workspace": str(proj)})               # the user picks a folder in the app
-    engine._sessions["chat-a"]["session"].set_llm(fake(AIMessage("Back.")))
+    engine.update({"workspace": str(tmp_path)})           # another chat picks a different folder
+    engine._sessions["chat-a"]["session"].set_llm(fake(AIMessage("Still here.")))
     list(engine.stream_answer("and now?", "chat-a", []))
-    assert session.workspace.root == proj.resolve()
+    assert session.workspace.root == (proj / "sub").resolve()
 
 
 # ---------------------------------------------------------------- reasoning and the transcript
@@ -401,7 +437,7 @@ def test_engine_session_history_api(server, make_client, tmp_path, monkeypatch):
     engine.update({"workspace": str(tmp_path)})
     events = list(engine.stream_answer("and again?", "chat-2", [], sid))
     assert events[0] == ("session", {"id": sid, "cwd": str(proj.resolve())})
-    assert engine.settings["workspace"] == str(proj.resolve())
+    assert engine.settings["workspace"] == str(tmp_path)
     assert len(client.get(f"/api/sessions/{sid}").json()["turns"]) == 4
     assert client.post("/api/chat", json={"question": "x", "session_id": "../etc"}).status_code == 400
 

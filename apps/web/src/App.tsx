@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  attachFiles, closeSettings, getState, newChat, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
+  attachFiles, closeSettings, currentBusy, currentDraft, getState, newChat, openSession, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
 } from './packages/store/store'
 import { Effects } from './packages/ui-effects/Effects'
 import { Composer } from './packages/ui-input/Composer'
 import { Sidebar } from './packages/ui-layout/Sidebar'
 import { Topbar } from './packages/ui-layout/Topbar'
+import { Environment } from './packages/ui-layout/Environment'
 import { Thread } from './packages/ui-conversation/Thread'
 import { Settings } from './packages/ui-settings/Settings'
 import { Icon } from './packages/ui-primitives/Icon'
@@ -17,14 +18,26 @@ import './packages/ui-input/input.css'
 import './packages/ui-model-selection/model.css'
 import './packages/ui-settings/settings.css'
 import './packages/ui-effects/effects.css'
+import './packages/ui-theme/designs.css'
 
 export function App() {
   const sidebar = useStore(s => s.sidebar)
   const [dragging, setDragging] = useState(false)
+  const [environment, setEnvironment] = useState(() => { try { return localStorage.getItem('vesper.environment') !== '0' } catch { return true } })
+  const toggleEnvironment = (): void => setEnvironment(open => {
+    try { localStorage.setItem('vesper.environment', open ? '0' : '1') } catch { /* private mode */ }
+    return !open
+  })
   const depth = useRef(0)
 
   useEffect(() => {
-    void refresh()
+    const url = new URL(window.location.href)
+    const sessionId = url.searchParams.get('session')
+    url.searchParams.delete('session')
+    if (sessionId) window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+    void refresh().then(() => {
+      if (sessionId && /^[0-9a-f]{4,32}$/.test(sessionId) && !getState().currentId && !currentDraft(getState())) void openSession(sessionId)
+    })
     if (window.innerWidth < 820 && getState().sidebar) toggleSidebar()
   }, [])
 
@@ -36,8 +49,12 @@ export function App() {
       else if (mod && e.key === ',') { e.preventDefault(); if (getState().settings.open) closeSettings(); else openSettings() }
       else if (mod && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar() }
       else if (mod && !e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); toggleTranscript() }
-      else if (mod && e.key === 'k') { e.preventDefault(); (document.querySelector('.side-search input') as HTMLInputElement | null)?.focus() }
-      else if (e.key === 'Escape' && getState().streamingId && !getState().settings.open) stop()
+      else if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        if (!getState().sidebar) toggleSidebar()
+        requestAnimationFrame(() => (document.querySelector('.side-search input') as HTMLInputElement | null)?.focus())
+      }
+      else if (e.key === 'Escape' && currentBusy(getState()) && !getState().settings.open) stop()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -76,10 +93,11 @@ export function App() {
         <Sidebar />
         <main className="main" onClick={e => { if (window.innerWidth < 820 && sidebar && e.target === e.currentTarget) toggleSidebar() }}>
           <Effects />
-          <Topbar />
+          <Topbar environment={environment} onToggleEnvironment={toggleEnvironment} />
           <Thread />
           <Composer />
         </main>
+        {environment && <Environment onClose={toggleEnvironment} />}
       </div>
       <Settings />
       {dragging && (
