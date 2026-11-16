@@ -2,13 +2,14 @@
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from vesper import prompts
-from vesper.coder import Session, fit_history, repair_history
+from vesper.coder import Session, fit_history, repair_history, transcript
 from vesper.store import Store
 from vesper.workspace import Workspace
 
@@ -256,11 +257,24 @@ def test_long_conversation_is_trimmed_with_a_notice(proj):
                 raise RuntimeError("no summary today")
             return super()._generate(messages, *args, **kwargs)
 
-    s = Session(Broken(disable_streaming=True, messages=iter([AIMessage("ok")])), Workspace(proj), context_tokens=100)
+    s = Session(Broken(disable_streaming=True, messages=iter([AIMessage("ok"), AIMessage("ok 2")])), Workspace(proj),
+                context_tokens=100)
     s.history = [HumanMessage("old " * 300), AIMessage("old answer " * 300), HumanMessage("b"), AIMessage("c")]
+    sent = []
+    real = s._agent_for_cwd
+
+    def spy():
+        agent = real()
+        stream = agent.stream
+        agent_stream = lambda inputs, *a, **k: (sent.append(inputs["messages"]), stream(inputs, *a, **k))[1]  # noqa: E731
+        return type("A", (), {"stream": staticmethod(agent_stream)})()
+
+    s._agent_for_cwd = spy
     notices = [d["text"] for e, d in s.ask("next") if e == "notice"]
     assert notices and "trimmed" in notices[0]
-    assert s.history[0].content == "b"
+    assert sent[0][0].content == "b"  # the model got the part that fits
+    assert s.history[0].content.startswith("old") and s.history[-1].content == "ok"  # nothing is lost from the saved chat
+    assert [text for e, d in s.ask("again") if e == "notice" for text in [d["text"]]] == []  # said once per session
 
 
 # ---------------------------------------------------------------- prompts
@@ -399,6 +413,7 @@ def test_reasoning_events_and_transcript(store, proj):
     assert "".join(d["text"] for e, d in events if e == "token") == "The file says alpha."
 
     turns = transcript(store.load_messages(s.id))
+    assert turns[0].pop("turn").startswith("vesper-turn-")
     assert turns[0] == {"role": "user", "text": "what is in a.txt?"}
     kinds = [p["type"] for p in turns[1]["parts"]]
     assert kinds == ["reasoning", "tool", "reasoning", "text"]
@@ -426,6 +441,7 @@ def test_engine_session_history_api(server, make_client, tmp_path, monkeypatch):
     rows = client.get("/api/sessions").json()["sessions"]
     assert rows[0]["id"] == sid and rows[0]["title"] == "say hello" and rows[0]["source"] == "desktop"
     saved = client.get(f"/api/sessions/{sid}").json()
+    assert saved["turns"][0].pop("turn").startswith("vesper-turn-")
     assert saved["turns"][0] == {"role": "user", "text": "say hello"}
     parts = saved["turns"][1]["parts"]
     assert [p["type"] for p in parts] == ["tool", "reasoning", "text"] and "hello" in parts[0]["output"]
@@ -505,3 +521,122 @@ def test_mentions_attach_files_folders_and_images(proj):
     from vesper.tui import DROPPED  # what a Windows terminal pastes
     assert [m.group(3) for m in DROPPED.finditer(r"see C:\Users\me\pic.png")] == [r"C:\Users\me\pic.png"]
     assert [m.group(2) for m in DROPPED.finditer(r'see "C:\Users\me\my pic.png"')] == [r"C:\Users\me\my pic.png"]
+
+
+# ---------------------------------------------------------------- nothing is lost when a turn is cut short
+def test_question_and_finished_steps_are_saved_while_the_turn_runs(proj, store):
+    s = Session(fake(call("list_files", path="."), AIMessage("done")), Workspace(proj), store)
+    seen = []
+    for event, _ in s.ask("look around"):
+        if event == "tool_end":  # mid-turn: what a force quit right now would leave on disk
+            seen = store.load_messages(s.id)
+    assert [m.type for m in seen][:3] == ["human", "ai", "tool"] and seen[0].content == "look around"
+    assert [m.type for m in store.load_messages(s.id)] == ["human", "ai", "tool", "ai"]
+
+
+def test_a_stopped_answer_keeps_what_was_written(proj, store):
+    llm = ToolFake(messages=iter([AIMessage("one two three four five six seven")]))  # streams word by word
+    s = Session(llm, Workspace(proj), store)
+    turn = s.ask("count")
+    for event, data in turn:
+        if event == "token" and "three" in data["text"]:
+            break
+    turn.close()  # what Stop and closing the window do
+    saved = store.load_messages(s.id)
+    assert saved[0].content == "count"
+    assert saved[-1].type == "ai" and saved[-1].content.startswith("one two three") and "[stopped]" in saved[-1].content
+
+
+def test_a_failed_turn_keeps_the_question(proj, store):
+    class Down(ToolFake):
+        def _generate(self, *a, **k):
+            raise RuntimeError("provider is down")
+
+    s = Session(Down(disable_streaming=True, messages=iter([])), Workspace(proj), store)
+    with pytest.raises(RuntimeError):
+        list(s.ask("are you there?"))
+    assert [m.content for m in store.load_messages(s.id)] == ["are you there?"]
+
+
+# ---------------------------------------------------------------- rewind
+def test_rewind_forgets_a_message_and_what_followed_and_can_put_files_back(proj, store):
+    ws = Workspace(proj, mode="yolo")
+    s = Session(fake(
+        call("write_file", path="a.txt", content="first edit\n"), AIMessage("did one"),
+        call("write_file", path="new.txt", content="made\n"), AIMessage("did two"),
+        AIMessage("three"),
+    ), ws, store)
+    list(s.ask("change a"))
+    list(s.ask("add a file"))
+    list(s.ask("just talk"))
+    assert (proj / "a.txt").read_text() == "first edit\n" and (proj / "new.txt").exists()
+    with pytest.raises(ValueError, match="changed"):
+        s.rewind(1, expect="something else")
+    out = s.rewind(1, expect="add a", files=True)  # the second-to-last message
+    assert out["text"] == "add a file" and out["files_known"]
+    assert [Path(p).name for p in out["restored"]] == ["new.txt"]
+    assert not (proj / "new.txt").exists() and (proj / "a.txt").read_text() == "first edit\n"
+    assert [m.content for m in store.load_messages(s.id) if m.type == "human"] == ["change a"]
+    out = s.rewind(0, files=False)  # conversation only: the file stays as the agent left it
+    assert out["text"] == "change a" and out["restored"] == [] and s.history == []
+    assert (proj / "a.txt").read_text() == "first edit\n"
+
+
+def test_rewind_endpoint_validates_and_refuses_a_busy_chat(proj):
+    from fastapi.testclient import TestClient
+
+    from vesper import server
+
+    app = server.create_app("t", engine=server.Engine())
+    client = TestClient(app, headers={"X-Token": "t", "Host": "127.0.0.1"})
+    assert client.post("/api/chats/../rewind", json={"from_end": 0}).status_code in (400, 404)
+    assert client.post("/api/chats/c1/rewind", json={"from_end": -1}).status_code == 400
+    assert client.post("/api/chats/c1/rewind", json={"from_end": True}).status_code == 400
+    assert client.post("/api/chats/c1/rewind", json={"from_end": 0, "turn": "x; drop"}).status_code == 400
+
+
+def test_terminal_rewind_puts_the_message_back_in_the_prompt(proj, store, monkeypatch):
+    from vesper import tui
+
+    s = Session(fake(AIMessage("one"), AIMessage("two")), Workspace(proj), store)
+    list(s.ask("first thing"))
+    list(s.ask("second thing"))
+    app = tui.App.__new__(tui.App)
+    app.session, app.workspace, app._prefill = s, s.workspace, ""
+    app.wait_idle = lambda: None
+    answers = iter(["", "n"])  # the default (1 = latest), no files
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    app.rewind("")
+    assert app._prefill == "second thing"
+    assert [m.content for m in store.load_messages(s.id) if m.type == "human"] == ["first thing"]
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    app.rewind("9")  # out of range: nothing happens
+    assert [m.content for m in s.history if m.type == "human"] == ["first thing"]
+
+
+def test_rewind_by_turn_id_names_the_exact_message(proj, store):
+    s = Session(fake(AIMessage("one"), AIMessage("two"), AIMessage("three")), Workspace(proj), store)
+    events = list(s.ask("first"))
+    first_id = next(d["id"] for e, d in events if e == "turn")
+    list(s.ask("second"))
+    list(s.ask("first"))  # same words again: only the id tells them apart
+    ids = [t["turn"] for t in transcript(s.history) if t["role"] == "user"]
+    assert ids[0] == first_id and len(set(ids)) == 3
+    with pytest.raises(ValueError):
+        s.rewind(0, turn="vesper-turn-1")
+    out = s.rewind(0, turn=ids[1])  # from_end is ignored when the id is known
+    assert out["text"] == "second"
+    assert [m.content for m in s.history if m.type == "human"] == ["first"]
+
+
+def test_an_answer_cut_off_by_an_error_says_so(proj, store):
+    class Breaks(ToolFake):
+        def _stream(self, *a, **k):
+            yield from super()._stream(*a, **k)
+            raise RuntimeError("connection reset")
+
+    s = Session(Breaks(messages=iter([AIMessage("half an answer")])), Workspace(proj), store)
+    with pytest.raises(RuntimeError):
+        list(s.ask("go"))
+    last = store.load_messages(s.id)[-1]
+    assert last.type == "ai" and "half an answer" in last.content and "[cut off by an error]" in last.content

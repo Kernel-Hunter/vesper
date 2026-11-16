@@ -239,6 +239,19 @@ class Store:
             ).fetchall()
         return [(r["turn"], r["path"], None if r["before"] is None else bytes(r["before"])) for r in rows]
 
+    def checkpoints_since(self, session_id: str, turn: int) -> list[tuple[int, str, bytes | None]]:
+        """(turn, path, old bytes) of every turn from `turn` on, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT turn, path, before FROM checkpoints WHERE session_id = ? AND turn >= ? ORDER BY turn, path",
+                (session_id, int(turn)),
+            ).fetchall()
+        return [(r["turn"], r["path"], None if r["before"] is None else bytes(r["before"])) for r in rows]
+
+    def delete_checkpoints_since(self, session_id: str, turn: int) -> None:
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM checkpoints WHERE session_id = ? AND turn >= ?", (session_id, int(turn)))
+
     def delete_checkpoints(self, session_id: str, turn: int) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM checkpoints WHERE session_id = ? AND turn = ?", (session_id, int(turn)))

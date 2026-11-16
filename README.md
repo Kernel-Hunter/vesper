@@ -117,6 +117,7 @@ command line and all tool output, where the normal view prints one summary line 
 | `/status` | model, folder, session id, tokens used and how full the context is |
 | `/plan` | plan mode on or off: Vesper reads and proposes a plan, and works after you approve it |
 | `/undo` | put files back to how they were before Vesper's last changes |
+| `/rewind` | go back to before one of your messages to change it; can also put files back |
 | `/compact` | replace the older part of the conversation with a summary to free context |
 | `/permissions` | list the commands and web sites that run without asking; remove one |
 | `/think` | how hard reasoning models think: `off`, `low`, `medium`, `high` |
@@ -145,6 +146,20 @@ Before Vesper changes a file it keeps a copy of the old content. `/undo` puts ba
 file the last round of edits touched, including files it created, and tells the model on
 your next message. Undo covers files, so a command the agent ran (a `git commit`, a
 database migration) stays as it is.
+
+`/rewind` goes further back. It lists your last ten messages; pick one and Vesper forgets
+it and everything after it, then puts its text back in the prompt so you can change it and
+send it again. It asks whether to also put back the files changed since then (this works
+for the last 20 messages).
+
+### Documents
+
+`read_file` reads more than code and text. Word (`.docx`), PowerPoint (`.pptx`), Excel
+(`.xlsx`), OpenDocument (`.odt`, `.ods`, `.odp`), EPUB and RTF files are turned into plain
+text with headings, lists, tables, slides and sheets kept, using only the Python standard
+library. Old Word `.doc` files are converted with macOS's `textutil`. Old `.xls` and `.ppt`
+files and Apple iWork files need to be saved in a newer format first; Vesper says so
+instead of guessing. Long documents are read a page at a time, like long code files.
 
 ### The web
 
@@ -200,6 +215,11 @@ vesper logs 3f9a2c --full # the same, with tool arguments and output
 vesper logs --json        # one JSON object per event, for scripts
 ```
 
+Each step is saved as soon as it finishes, so stopping an answer, a crash or a force quit
+loses at most the step that was running. An answer cut off half way is kept with
+`[stopped]` (or `[cut off by an error]`) at the end. In long conversations the model gets a
+shortened copy to fit its context, but the saved conversation keeps every turn.
+
 The database is an ordinary SQLite file with four tables (`sessions`, `messages`,
 `events`, and `checkpoints` for undo), so `sqlite3 ~/.vesper/vesper.db` works on it too.
 The desktop app reads and writes the same file: a conversation started in the terminal can
@@ -232,7 +252,14 @@ for a Python install of the browser app, run `pip install "vesper-agent[dictatio
 The Plan button next to the model picker turns plan mode on: the answer is a plan with a
 "Run this plan" button under it. The task list is drawn as a checklist inside the answer,
 and an answer that changed files gets an undo button. `/undo`, `/compact` and `/plan` also
-work when typed into the message box. Settings, Agent lists the saved "always allow" rules
+work when typed into the message box. The square Stop button ends the answer within a
+second or two, even while the model is still thinking, and stops any command it started.
+
+Hover over one of your own messages for Copy, Edit and Rewind. Edit lets you change the text
+and send it again; Rewind goes back to before that message and puts its text in the message
+box. Both forget that message and everything after it, and both can also put back the files
+the agent changed since then. `/rewind` in the message box does the same for your last
+message. Settings, Agent lists the saved "always allow" rules
 and has the thinking level.
 
 The sidebar lists every saved conversation, from the app and from the terminal, newest

@@ -29,7 +29,7 @@ export function parseTasks(text: unknown): Task[] {
 /** Turns from the session database, as the messages this app draws. */
 export function turnsToMessages(turns: Turn[]): Msg[] {
   return turns.map((turn): Msg => {
-    if (turn.role === 'user') return { ...blankMsg('user'), text: turn.text, attachments: turn.attachments }
+    if (turn.role === 'user') return { ...blankMsg('user'), text: turn.text, attachments: turn.attachments, turnId: turn.turn }
     const msg = blankMsg('bot')
     for (const part of turn.parts) {
       const n = msg.tools.length + msg.thoughts.length

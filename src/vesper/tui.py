@@ -95,6 +95,7 @@ SLASH = {
     "/status": "model, folder, session and token use",
     "/plan": "plan mode on or off: Vesper reads and proposes a plan, you approve it, then it works",
     "/undo": "put files back to how they were before Vesper's last changes",
+    "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
     "/think": "how hard reasoning models think: off | low | medium | high",
@@ -105,7 +106,7 @@ SLASH = {
     "/exit": "quit (or ctrl+d)",
 }
 ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/delete": "/sessions rm", "/log": "/logs",
-           "/rewind": "/undo", "/allow": "/permissions", "/thinking": "/think"}
+           "/allow": "/permissions", "/thinking": "/think"}
 SHORTCUTS = [
     ("@path", "attach a file, folder or image (@\"path with spaces\"); dropping an image file works too"),
     ("!command", "run a shell command yourself (!cd folder moves Vesper too)"),
@@ -192,6 +193,7 @@ class App:
         self._worker: threading.Thread | None = None
         self._shown_cwd = root
         self._before_plan = "ask"   # the mode to go back to when a plan is approved
+        self._prefill = ""          # text put into the next prompt (after /rewind)
         self._finished = False      # the last turn ran to its end (not stopped, no error)
 
     @property
@@ -545,6 +547,46 @@ class App:
             console.print(Text.assemble(("  ↩ ", ACCENT_2), (self.workspace.rel(Path(path)), "")))
         note(f"{len(paths)} file{'s' if len(paths) != 1 else ''} put back. Commands Vesper ran are not undone.")
 
+    def rewind(self, arg: str = "") -> None:
+        """/rewind [N]: forget one of the user's messages and everything after it; its text comes back to edit."""
+        self.wait_idle()
+        starts = self.session.user_turns()
+        if not starts:
+            note("Nothing to go back to yet.")
+            return
+        from vesper.coder import user_text
+
+        texts = [user_text(self.session.history[i]) for i in reversed(starts[-10:])]
+        if not arg.strip():
+            console.print(Text("Go back to before which message? 1 is your latest.", style="bold"))
+            for n, text in enumerate(texts, start=1):
+                first = text.splitlines()[0] if text else ""
+                console.print(Text.assemble((f"  {n:>2}  ", ACCENT), (first[:90] + ("…" if len(first) > 90 or "\n" in text else ""), "")))
+            try:
+                arg = input("  number [1]: ").strip() or "1"
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+                return
+        if not arg.isdigit() or not 1 <= int(arg) <= len(starts):
+            note(f"Give a number from 1 to {len(starts)}.", WARN)
+            return
+        try:
+            files = input("  Also put back files Vesper changed since then? [y/N] ").strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            return
+        try:
+            out = self.session.rewind(int(arg) - 1, files=files)
+        except (ValueError, OSError) as exc:
+            note(f"Could not go back: {exc}", ERR)
+            return
+        for path in out["restored"]:
+            console.print(Text.assemble(("  ↩ ", ACCENT_2), (self.workspace.rel(Path(path)), "")))
+        if files and not out["files_known"]:
+            note("Only the conversation went back: that message is older than file tracking.", WARN)
+        note("Went back. Your message is in the prompt: edit it and press Enter, or clear it.")
+        self._prefill = out["text"]
+
     def compact(self) -> None:
         self.wait_idle()
         before = self.session.tokens["context"]
@@ -778,6 +820,8 @@ class App:
             self.set_mode(self._before_plan if self.mode == "plan" else "plan")
         elif cmd == "/undo":
             self.undo()
+        elif cmd == "/rewind":
+            self.rewind(arg)
         elif cmd == "/compact":
             self.compact()
         elif cmd == "/permissions":
@@ -827,8 +871,10 @@ class App:
         last_interrupt = 0.0
         while True:
             try:
-                line = prompt.prompt()
+                line = prompt.prompt(default=self._prefill)
+                self._prefill = ""
             except KeyboardInterrupt:
+                self._prefill = ""
                 if time.monotonic() - last_interrupt < 2:
                     break
                 last_interrupt = time.monotonic()

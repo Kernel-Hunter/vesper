@@ -364,7 +364,8 @@ def test_undo_puts_files_back_and_tells_the_model(proj, store):
     list(again.ask("what now?"))
     sent = again.history[-2].content
     assert "<note>The user undid your changes" in sent and "app.py" in sent
-    assert transcript(again.history)[-2] == {"role": "user", "text": "what now?"}
+    asked = transcript(again.history)[-2]
+    assert asked.pop("turn").startswith("vesper-turn-") and asked == {"role": "user", "text": "what now?"}
 
 
 def test_undo_goes_back_one_turn_at_a_time_and_keeps_binary_files(proj):

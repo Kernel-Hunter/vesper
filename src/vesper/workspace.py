@@ -283,11 +283,27 @@ class Workspace:
         offset, limit = max(1, int(offset)), max(1, min(int(limit), 2000))
         if p.suffix.lower() == ".pdf":
             return self._read_pdf(p, offset, limit)
+        from vesper import documents
+
+        if p.suffix.lower() in documents.DOCUMENT_TYPES:
+            try:
+                text = documents.extract(p)
+            except documents.DocumentError as exc:
+                raise ToolError(str(exc)) from None
+            except Exception as exc:  # a damaged file must not end the turn
+                raise ToolError(f"Could not read {self.rel(p)}: {type(exc).__name__}: {str(exc)[:200]}") from None
+            if not text.strip():
+                return f"{self.rel(p)} has no text in it (it may hold only images)."
+            return self._page(p, text, offset, limit, truncated=False)
         with open(p, "rb") as f:
             raw = f.read(MAX_READ_BYTES + 1)
         if b"\x00" in raw[:8192]:
             return f"{self.rel(p)} is a binary file ({_size(p.stat().st_size)}); it cannot be shown as text."
-        text = raw[:MAX_READ_BYTES].decode("utf-8", errors="replace")
+        return self._page(p, raw[:MAX_READ_BYTES].decode("utf-8", errors="replace"), offset, limit,
+                          truncated=len(raw) > MAX_READ_BYTES)
+
+    def _page(self, p: Path, text: str, offset: int, limit: int, truncated: bool) -> str:
+        """Lines `offset`.. of `text`, numbered, with a note on how to read on."""
         lines = text.splitlines()
         chunk = lines[offset - 1: offset - 1 + limit]
         if not chunk:
@@ -297,7 +313,7 @@ class Workspace:
         note = ""
         if end < len(lines):
             note = f"\n(lines {offset}-{end} of {len(lines)}; call read_file with offset={end + 1} for more)"
-        if len(raw) > MAX_READ_BYTES:
+        if truncated:
             note += f"\n(file is {_size(p.stat().st_size)}; only the first {_size(MAX_READ_BYTES)} were read)"
         return body + note
 
@@ -589,7 +605,7 @@ class Workspace:
 
         @tool
         def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> str:
-            """Read a text file with line numbers (`offset` = first line), or a PDF (`offset` and `limit` count pages)."""
+            """Read a text file or document (Word, Excel, PowerPoint, OpenDocument, RTF, EPUB) with line numbers (`offset` = first line), or a PDF (`offset` and `limit` count pages)."""
             return safe(ws.read_file, path, offset, limit)
 
         @tool

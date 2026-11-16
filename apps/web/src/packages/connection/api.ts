@@ -84,7 +84,7 @@ export type TurnPart =
   | { type: 'text'; text: string }
   | { type: 'tool'; id: string; name: string; args: Record<string, unknown>; output: string | null; ok: boolean | null }
 
-export type Turn = { role: 'user'; text: string; attachments?: string[] } | { role: 'assistant'; parts: TurnPart[] }
+export type Turn = { role: 'user'; text: string; attachments?: string[]; turn?: string } | { role: 'assistant'; parts: TurnPart[] }
 
 /** One line of the agent's task list. */
 export interface Task {
@@ -127,6 +127,7 @@ export type StreamEvent =
   | { event: 'error'; data: { message: string } }
   | { event: 'attached'; data: { names: string[]; problems: string[] } }
   | { event: 'session'; data: { id: string; cwd: string } }
+  | { event: 'turn'; data: { id: string } }
   | { event: 'saved'; data: { id: string; updated_at: number } }
   | { event: 'reasoning'; data: { text: string } }
   | { event: 'tool_draft'; data: { name: string; chars: number } }
@@ -140,6 +141,7 @@ export type StreamEvent =
   | { event: 'notice'; data: { text: string } }
   | { event: 'approval'; data: ApprovalRequest }
   | { event: 'approval_done'; data: { id: string; answer: ApprovalAnswer; timeout?: boolean } }
+  | { event: 'stopped'; data: Record<string, never> }
   | { event: 'done'; data: Record<string, never> }
 
 /** Token from the URL hash (#token=...), kept for the session and removed from the address bar. */
@@ -222,6 +224,12 @@ export const api = {
   /** Stops a running answer in the engine (ends its command, refuses further tools). */
   stopChat: async (chatId: string): Promise<boolean> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: 'POST' })).json()) as { stopped: boolean }).stopped,
+  /** Forgets one of the user's messages and everything after it; `files` also puts back files changed since. */
+  rewindChat: async (chatId: string, sessionId: string | undefined, fromEnd: number, text: string, files: boolean, turn?: string):
+    Promise<{ text: string; restored: string[]; files_known: boolean }> =>
+    (await request(`/api/chats/${encodeURIComponent(chatId)}/rewind`, {
+      method: 'POST', json: { session_id: sessionId, from_end: fromEnd, text, files, turn },
+    })).json(),
   /** Puts back the files the agent's latest edits changed. */
   undo: async (chatId: string, sessionId?: string): Promise<string[]> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[] }).paths,

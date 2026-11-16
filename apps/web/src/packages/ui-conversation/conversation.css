@@ -33,6 +33,18 @@
 .msg.user { justify-content: flex-end; }
 .user-col { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 78%; }
 .user-col .bubble { max-width: 100%; }
+.user-actions { display: flex; gap: 2px; opacity: 0; transition: opacity var(--t-fast, .12s); }
+.msg.user:hover .user-actions, .user-actions:focus-within { opacity: 1; }
+@media (hover: none) { .user-actions { opacity: 1; } }
+.user-col.editing { width: min(640px, 100%); max-width: 100%; align-items: stretch; }
+.edit-box { width: 100%; resize: vertical; min-height: 64px; padding: 10px 12px; border-radius: var(--r-md, 10px); border: 1px solid var(--accent);
+  background: var(--layer-1); color: var(--text); font: inherit; line-height: 1.5; outline: none; }
+.edit-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.edit-actions .dim { margin-right: auto; font-size: 12px; }
+.rewind-files { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); }
+.rewind-card { display: flex; flex-direction: column; gap: 8px; max-width: 420px; padding: 12px 14px; border-radius: var(--r-md, 10px);
+  border: 1px solid var(--line-2); background: var(--layer-1); font-size: 13px; }
+.rewind-card .dim { font-size: 12.5px; }
 .sent-attachments { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .msg.user .bubble {
   max-width: 100%; box-sizing: border-box; padding: 10px 16px; border-radius: 20px 20px 6px 20px;

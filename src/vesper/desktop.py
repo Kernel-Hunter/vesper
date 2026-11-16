@@ -115,8 +115,9 @@ def _app_mode_browser(url: str) -> bool:
     return False
 
 
-def _exit_when_stdin_closes():
-    """Electron keeps our stdin open. EOF means the parent is gone, so we go too."""
+def _exit_when_stdin_closes(before_exit=None):
+    """Electron keeps our stdin open. EOF means the parent is gone, so we go too.
+    `before_exit` runs first (it stops running answers so they are saved)."""
     stdin = sys.stdin
     if stdin is None:  # pythonw / GUI launch without pipes: nothing to watch
         return
@@ -131,6 +132,11 @@ def _exit_when_stdin_closes():
                 pass
         except OSError:
             pass
+        if before_exit is not None:
+            try:
+                before_exit()
+            except Exception:  # noqa: BLE001 - quitting must not hang on a failed save
+                pass
         os._exit(0)
 
     threading.Thread(target=watch, name="stdin-watch", daemon=True).start()
@@ -139,10 +145,11 @@ def _exit_when_stdin_closes():
 def engine_mode() -> int:
     """`--engine`: child process of the Electron shell."""
     token = _token()
-    _, port, thread = start_server(token, _port())
+    app, port, thread = start_server(token, _port())
     sys.stdout.write(f"{READY_PREFIX} {json.dumps({'port': port, 'token': token})}\n")
     sys.stdout.flush()
-    _exit_when_stdin_closes()
+    # Electron gives the engine 3 seconds after closing stdin; running answers get 2 of them to save.
+    _exit_when_stdin_closes(lambda: app.state.engine.shutdown(timeout=2.0))
     thread.join()  # the server only stops when the process is killed
     return 0
 

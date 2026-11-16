@@ -59,6 +59,7 @@ def test_files_folders_and_images_reach_the_model_once(engine):
     # The saved transcript shows what was attached, not the file contents.
     sid = next(d for e, d in events if e == "session")["id"]
     first = engine.saved_session(sid)["turns"][0]
+    assert first.pop("turn").startswith("vesper-turn-")
     assert first == {"role": "user", "text": "look", "attachments": ["notes.md", "pkg", "shot.png", "clip.png"]}
 
 
@@ -263,3 +264,97 @@ def test_stopping_one_chat_refuses_its_pending_approval(engine, monkeypatch):
         assert engine.stop_chat("approval")
         result.result(timeout=5)
     assert answers == ["no"]
+
+
+def test_stop_ends_the_answer_while_the_model_is_still_thinking(engine, monkeypatch):
+    """Stop must work during a slow model call, not only between steps, and the chat is usable after."""
+    import concurrent.futures
+    import threading
+    import time
+
+    from vesper.coder import Session
+
+    calling, release = threading.Event(), threading.Event()
+    real_ask = Session.ask
+
+    def slow_ask(self, question, **kwargs):
+        if question == "slow":
+            calling.set()
+            release.wait(10)  # a model call that takes its time
+            yield "token", {"text": "late"}
+            return
+        yield from real_ask(self, question, **kwargs)
+
+    monkeypatch.setattr(Session, "ask", slow_ask)
+    engine.test_llm.messages = iter([AIMessage("next answer")])
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        first = pool.submit(lambda: list(engine.stream_answer("slow", "c9", [])))
+        assert calling.wait(5)
+        t = time.monotonic()
+        assert engine.stop_chat("c9")
+        events = first.result(timeout=3)
+        assert time.monotonic() - t < 2  # ended at once, without waiting for the model
+        assert ("stopped", {}) in events and events[-1] == ("done", {})
+        assert not any(e == "token" and d["text"] == "late" for e, d in events)
+        second = pool.submit(lambda: list(engine.stream_answer("again", "c9", [])))
+        time.sleep(0.2)
+        release.set()  # the stopped call returns; the next message goes ahead instead of failing
+        events = second.result(timeout=10)
+    assert not any(e == "error" for e, _ in events), events
+    assert ("token", {"text": "next answer"}) in events
+
+
+def test_quitting_the_app_stops_running_answers_and_waits_briefly(engine, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+
+    from vesper.coder import Session
+
+    calling, release = threading.Event(), threading.Event()
+
+    def slow_ask(self, question, **kwargs):
+        calling.set()
+        release.wait(10)
+        yield "token", {"text": "late"}
+
+    monkeypatch.setattr(Session, "ask", slow_ask)
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        run = pool.submit(lambda: list(engine.stream_answer("slow", "q1", [])))
+        assert calling.wait(5)
+        t = time.monotonic()
+        engine.shutdown(timeout=0.5)  # a model call that never returns cannot hold up quitting
+        assert time.monotonic() - t < 1.5
+        release.set()
+        assert ("stopped", {}) in run.result(timeout=5)
+    engine.shutdown(timeout=0.5)  # nothing running: returns at once
+
+
+def test_undo_and_rewind_wait_for_a_stopped_answer_instead_of_failing(engine, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+
+    from vesper.coder import Session
+
+    calling, release = threading.Event(), threading.Event()
+
+    def slow_ask(self, question, **kwargs):
+        calling.set()
+        release.wait(10)
+        yield "token", {"text": "late"}
+
+    monkeypatch.setattr(Session, "ask", slow_ask)
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        run = pool.submit(lambda: list(engine.stream_answer("slow", "r1", [])))
+        assert calling.wait(5)
+        assert engine.stop_chat("r1")
+        idle = pool.submit(engine._idle_session, "r1", None)  # what Edit, Rewind, Undo and Compact call
+        time.sleep(0.3)
+        assert not idle.done()  # waits for the stopped model call instead of answering 409
+        release.set()
+        entry, _ = idle.result(timeout=5)
+        entry["lock"].release()
+        run.result(timeout=5)
+    entry = engine._folder_session("r1", [], None)
+    assert not entry.get("stopping")

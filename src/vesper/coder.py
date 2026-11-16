@@ -23,6 +23,7 @@ import ast
 import json
 import math
 import re
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,6 +55,7 @@ MAX_SUMMARY_INPUT_CHARS = 60_000
 MAX_CHECKPOINT_BYTES = 5_000_000  # larger files are changed without an undo copy
 INTERRUPTED = "Interrupted by the user before this finished."
 SUMMARY_OPEN, SUMMARY_ACK = "<summary>", "Understood. I will continue from this summary."
+TURN_ID_PREFIX = "vesper-turn-"  # id of the user's message in a turn, so a rewind finds that turn's file copies
 SUPERSEDED = "[This file was read again later in the conversation; use the newer result.]"
 RETRY_HINT = ("Your last reply was empty or was a tool call whose arguments were not valid JSON. "
               "Reply again: either call the tool with valid JSON arguments or answer in text.")
@@ -136,6 +138,11 @@ def split_thinking(text: str) -> tuple[str, str]:
             "".join(t for k, t in parts if k == "token").strip())
 
 
+def user_text(m: BaseMessage) -> str:
+    """What the user typed in a message, without the files and notes Vesper added to it."""
+    return re.split(r"\n\n<(?:file path=|folder path=|note>)|\n\[image ", text_of(m.content))[0].strip()
+
+
 def transcript(messages: list[BaseMessage]) -> list[dict]:
     """A saved conversation as turns the front ends can draw.
 
@@ -154,7 +161,9 @@ def transcript(messages: list[BaseMessage]) -> list[dict]:
             else:
                 names = re.findall(r'<(?:file|folder) path="([^"]+)">', text)
                 names += re.findall(r"\[image (.+?) was shown to you in this message\]", text)
-                turn = {"role": "user", "text": re.split(r"\n\n<(?:file path=|folder path=|note>)|\n\[image ", text)[0].strip()}
+                turn = {"role": "user", "text": user_text(m)}
+                if str(m.id or "").startswith(TURN_ID_PREFIX):
+                    turn["turn"] = m.id
                 if names:
                     turn["attachments"] = names
                 turns.append(turn)
@@ -429,6 +438,7 @@ class Session:
         self._turn_id = 0                           # groups the file copies kept for undo
         self._copies: list[tuple[int, str, bytes | None]] = []  # (turn, path, old bytes), newest last
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
+        self._told_trimmed = False                  # the "shortened copy" notice is shown once per session
         workspace.on_cwd = self._on_cwd
         workspace.on_change = self._on_change
         workspace.on_tasks = lambda items: self._pending.append(("tasks", {"items": [dict(t) for t in items]}))
@@ -558,8 +568,8 @@ class Session:
         if self.store is not None and self._saved:
             try:
                 self.store.save_messages(self.id, self.history)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001 - never end a turn over it, but say so
+                print(f"vesper: could not save session {self.id}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     # ---------------------------------------------------------------- undo
     def _on_change(self, path: Path, before: bytes | None) -> None:
@@ -635,6 +645,65 @@ class Session:
         if self.store is not None and self._saved:
             self.store.update_session(self.id, title=self.title)
 
+    def user_turns(self) -> list[int]:
+        """Positions in the history of the user's own messages (not the summary of older turns)."""
+        return [i for i, m in enumerate(self.history)
+                if isinstance(m, HumanMessage) and not text_of(m.content).startswith(SUMMARY_OPEN)]
+
+    def rewind(self, from_end: int, expect: str | None = None, files: bool = False, turn: str | None = None) -> dict:
+        """Go back to before one of the user's messages: it and everything after it are forgotten.
+
+        `from_end` counts the user's messages from the newest (0 = the last one), because the
+        oldest ones may have been folded into a summary. `expect` is the start of that message's
+        text, a check that both sides mean the same one. With `files`, files the agent changed
+        from that message on are put back as they were (as far as undo copies go back).
+        `turn` (the message's id, "vesper-turn-N") names it exactly; the position is the fallback for
+        messages saved before ids were kept.
+        Returns {"text": the message, "restored": [paths], "files_known": bool}.
+        """
+        starts = self.user_turns()
+        if turn:
+            found = [i for i in starts if self.history[i].id == turn]
+            if not found:
+                raise ValueError("That message is not in this conversation any more.")
+            i = found[0]
+        elif 0 <= from_end < len(starts):
+            i = starts[len(starts) - 1 - from_end]
+        else:
+            raise ValueError("That message is not in this conversation any more.")
+        msg = self.history[i]
+        text = user_text(msg)
+        if expect is not None and not text.startswith(expect.strip()[:200]):
+            raise ValueError("The conversation changed since it was shown. Open it again and retry.")
+        restored: list[str] = []
+        turn_id = str(msg.id or "")
+        files_known = turn_id.startswith(TURN_ID_PREFIX)
+        if files and files_known:
+            turn = int(turn_id.removeprefix(TURN_ID_PREFIX))
+            rows = [r for r in self._copies if r[0] >= turn]
+            if self.store is not None and self._saved:
+                rows = self.store.checkpoints_since(self.id, turn)
+            first: dict[str, bytes | None] = {}
+            for _, path, before in sorted(rows, key=lambda r: r[0]):
+                first.setdefault(path, before)  # the oldest copy is how the file was before that message
+            for path, before in first.items():
+                target = Path(path)
+                if before is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(before)
+                restored.append(path)
+            self._copies = [r for r in self._copies if r[0] < turn]
+            if self.store is not None and self._saved:
+                self.store.delete_checkpoints_since(self.id, turn)
+            self.workspace._seen.clear()
+        self.history = self.history[:i]
+        self._undone = []
+        self._save()
+        self._log("rewind", detail={"text": text[:200], "restored": restored})
+        return {"text": text, "restored": restored, "files_known": files_known}
+
     def drop_last_turn(self) -> str | None:
         """Forget the last question and everything after it (to ask it again). Returns its text."""
         starts = [i for i, m in enumerate(self.history) if isinstance(m, HumanMessage)]
@@ -662,9 +731,26 @@ class Session:
         if sum(map(_size, self.history)) > self._budget() and self.compact():
             yield "notice", {"text": "The conversation is long, so older turns were summarized to save context."}
         history, cut = fit_history(self.history, self._budget())
-        if cut:
-            yield "notice", {"text": "The conversation is long, so older tool output and turns were trimmed to fit the model."}
-        messages = [*history, HumanMessage(human_content(text, images or []))]
+        if cut and not self._told_trimmed:
+            self._told_trimmed = True
+            yield "notice", {"text": "The conversation is long, so the model now sees a shortened copy: older tool output "
+                                     "and turns are trimmed. The full conversation stays saved."}
+        # The id carries the turn, so rewinding to this message knows which file copies came after it.
+        messages = [*history, HumanMessage(human_content(text, images or []), id=f"{TURN_ID_PREFIX}{self._turn_id}")]
+        # What is saved: the whole conversation (not the copy trimmed to fit the model) plus this turn.
+        before, sent = list(self.history), len(history)
+
+        def keep(msgs: list[BaseMessage], partial: str = "", failed: bool = False) -> None:
+            turn = list(msgs[sent:])
+            if partial.strip():  # an answer cut off while it was being written
+                turn.append(AIMessage(content=partial + ("\n\n[cut off by an error]" if failed else "\n\n[stopped]")))
+            self.history = [HumanMessage(without_images(m.content), id=m.id) if isinstance(m, HumanMessage) else m
+                            for m in repair_history(before + turn)]
+            self._save()
+
+        keep(messages)  # the question is on disk before the model answers
+        yield "turn", {"id": messages[-1].id}
+        partial, failed = "", False
         final: list[BaseMessage] | None = None
         streamed_ids: set[str] = set()
         streamed_model: set[str] = set()  # chunk IDs can differ from the final model message ID
@@ -693,6 +779,8 @@ class Session:
                             streamed_ids.add(msg.id or "")
                             for kind, part in splitter.feed(piece):
                                 streamed_model.add(kind)
+                                if kind == "token":
+                                    partial += part
                                 yield kind, {"text": part}
                         for part in msg.tool_call_chunks or []:
                             draft = drafts.setdefault(part.get("index") or 0, {"name": "", "chars": 0, "told": -1})
@@ -718,6 +806,7 @@ class Session:
                                         yield "token", {"text": answer}
                                 if node == "model":
                                     streamed_model.clear()
+                                    partial = ""
                                 for call in m.tool_calls or []:
                                     tools += 1
                                     # Time spent waiting for the user's approval is not the tool's time.
@@ -737,19 +826,19 @@ class Session:
                                 yield "tool_end", {"id": m.tool_call_id, "name": name, "output": out, "ok": ok, "ms": ms}
                 elif mode == "values":
                     final = chunk.get("messages")
+                    if final:
+                        keep(final)  # every finished step is saved, so a crash or force quit loses little
             yield from self._drain()
         except BaseException as exc:
-            if isinstance(exc, Exception):
+            failed = isinstance(exc, Exception)
+            if failed:
                 self._log("error", detail={"error": f"{type(exc).__name__}: {exc}"[:2000]})
             else:  # Ctrl+C, or the front end stopped listening
                 self._log("interrupt")
             raise
         finally:
             # Keep what happened even if the turn was stopped or failed half way.
-            if final:
-                self.history = [HumanMessage(without_images(m.content), id=m.id) if isinstance(m, HumanMessage) else m
-                                for m in repair_history(list(final))]
-                self._save()
+            keep(final or messages, partial, failed)
         usage = self._usage(final or [], len(messages), started + (self.workspace.waited - waited_before), tools)
         self._log("usage", detail=usage, ms=int(usage["seconds"] * 1000))
         yield "usage", usage

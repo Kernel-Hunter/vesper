@@ -40,6 +40,8 @@ export interface Msg {
   thoughts: Thought[]
   /** Files, folders and images sent with a question. */
   attachments?: string[]
+  /** The engine's id for this question ("vesper-turn-N"): rewinding names it exactly. */
+  turnId?: string
   usage?: Usage
   /** The agent's task list, as last updated in this answer. */
   tasks?: Task[]
@@ -381,6 +383,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
   // Tokens arrive fast; batch them into one render per animation frame.
   let pending = ''
   let frame = 0
+  let stopped = false // the engine ended this answer because Stop was pressed
   const flush = (): void => {
     frame = 0
     if (!pending) return
@@ -415,6 +418,9 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
       switch (e.event) {
         case 'session':
           set(st => ({ chats: st.chats.map(c => (c.id === cid ? { ...c, sessionId: e.data.id, cwd: e.data.cwd } : c)) }))
+          break
+        case 'turn':
+          patchMessage(cid, user.id, () => ({ turnId: e.data.id }))
           break
         case 'saved':
           set(st => ({ chats: st.chats.map(c => c.id === cid && c.sessionId === e.data.id ? { ...c, syncedAt: e.data.updated_at } : c) }))
@@ -488,6 +494,9 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
         case 'notice':
           toast(e.data.text)
           break
+        case 'stopped':
+          stopped = true
+          break
         default:
           break
       }
@@ -502,7 +511,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
     patchMessage(cid, bot.id, m => ({
       streaming: false,
       draft: undefined,
-      text: m.text || (m.error || m.tools.length ? '' : '_Stopped._'),
+      text: stopped && m.text ? `${m.text}\n\n_Stopped._` : m.text || (m.error || m.tools.length ? '' : '_Stopped._'),
       tools: m.tools.map(t => ({
         ...t,
         live: undefined,
@@ -730,6 +739,44 @@ export async function undoChanges(): Promise<void> {
   }
 }
 
+/**
+ * Goes back to before one of the user's own messages: it and everything after it are forgotten.
+ * `files` also puts back files the agent changed since then. With `edit`, the new text is sent at
+ * once; otherwise the old text returns to the message box to change and send.
+ */
+export async function rewindTo(chatId: string, msgId: string, opts: { files: boolean; edit?: string }): Promise<boolean> {
+  const chat = state.chats.find(c => c.id === chatId)
+  if (!chat) return false
+  if (state.streamingIds.includes(chatId)) { toast('Stop the answer first.', 'error'); return false }
+  if (opts.edit !== undefined && !readyToSend()) return false // keep the conversation if the new text cannot go
+  const at = chat.messages.findIndex(m => m.id === msgId)
+  const msg = chat.messages[at]
+  if (at < 0 || !msg || msg.role !== 'user') return false
+  const fromEnd = chat.messages.slice(at + 1).filter(m => m.role === 'user').length
+  let result: { text: string; restored: string[]; files_known: boolean }
+  try {
+    result = await api.rewindChat(chatId, chat.sessionId, fromEnd, msg.text, opts.files, msg.turnId)
+  } catch (e) {
+    toast(errorText(e), 'error')
+    return false
+  }
+  // Going back before the first message leaves an empty saved conversation, which the sidebar
+  // does not list; unlink it so the chat (and the text put back) stays open. The engine keeps the
+  // same session for this chat, so the next message saves to it again.
+  const emptied = at === 0
+  set(st => ({ chats: st.chats.map(c => (c.id === chatId
+    ? { ...c, messages: c.messages.slice(0, at), updated: Date.now(), ...(emptied ? { sessionId: undefined, syncedAt: undefined } : {}) }
+    : c)) }))
+  const n = result.restored.length
+  if (n) toast(`${n} file${n === 1 ? '' : 's'} put back: ${result.restored.map(folderName).slice(0, 4).join(', ')}${n > 4 ? ', …' : ''}`)
+  else if (opts.files && !result.files_known) toast('Only the conversation went back: this message is older than file tracking.')
+  else if (opts.files) toast('Went back. No files had changed since that message.')
+  if (state.currentId !== chatId) selectChat(chatId)
+  if (opts.edit !== undefined) await send(opts.edit)
+  else setDraft(result.text)
+  return true
+}
+
 /** Replaces the older turns of the open chat with a summary, to free context. */
 export async function compactChat(): Promise<void> {
   const chat = currentChat(state)
@@ -748,6 +795,7 @@ export const COMMANDS: { name: string; hint: string }[] = [
   { name: '/new', hint: 'start a new conversation' },
   { name: '/plan', hint: 'plan mode on or off' },
   { name: '/undo', hint: 'put back the files of the last change' },
+  { name: '/rewind', hint: 'go back before your last message to edit it (or use ↶ on any message)' },
   { name: '/compact', hint: 'summarize older turns to free context' },
   { name: '/transcript', hint: 'show thinking and output in full' },
   { name: '/rename', hint: 'rename this conversation: /rename New title' },
@@ -762,6 +810,12 @@ export function runCommand(text: string): boolean {
   const chat = currentChat(state)
   switch (word.toLowerCase()) {
     case '/undo': void undoChanges(); return true
+    case '/rewind': {
+      const last = chat ? [...chat.messages].reverse().find(m => m.role === 'user') : undefined
+      if (!chat || !last) toast('Nothing to go back to yet.')
+      else void rewindTo(chat.id, last.id, { files: false })
+      return true
+    }
     case '/compact': void compactChat(); return true
     case '/plan': void togglePlan(); return true
     case '/new': case '/clear': newChat(); return true

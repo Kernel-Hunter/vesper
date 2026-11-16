@@ -17,6 +17,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 import traceback
 from collections import OrderedDict
 from pathlib import Path
@@ -43,6 +44,8 @@ MAX_QUESTION_CHARS = 100_000
 MAX_CHAT_BYTES = 48 * 1024 * 1024  # a question with pasted images
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_ATTACHMENTS = 20
+STOP_GRACE_S = 1.5  # after Stop, how long the answer may take to finish cleanly before it is cut
+STOP_WAIT_S = 30  # how long a new message waits for a stopped answer's model call to return
 MAX_MODEL_LEN = 200
 MAX_KEY_LEN = 500
 AGENT_MODES = ("ask", "auto-edit", "yolo", "plan")
@@ -440,6 +443,9 @@ class Engine:
             yield "error", {"message": friendly_error(exc, s["provider"])}
             yield "done", {}
             return
+        if not acquired and entry.get("stopping"):
+            # A stopped answer lets go as soon as the model call it was waiting on returns.
+            acquired = entry["lock"].acquire(timeout=STOP_WAIT_S)
         if not acquired:
             yield "error", {"message": "This chat is still answering. Wait for it or stop it first."}
             yield "done", {}
@@ -450,8 +456,16 @@ class Engine:
         mine: list[str] = []
         session = entry["session"]
         def stop():
+            if entry["lock"].locked():  # only a turn still running is "stopping"
+                entry["stopping"] = True
             closed.set()
             session.workspace.cancel()
+            events.put(("stopped", {}))
+            # Give the turn a moment to save and finish; then end the answer in the app anyway,
+            # even if a model call is still waiting on the provider.
+            timer = threading.Timer(STOP_GRACE_S, events.put, args=(None,))
+            timer.daemon = True
+            timer.start()
             for aid in list(mine):
                 slot = self._approvals.get(aid)
                 if slot is not None:
@@ -507,6 +521,7 @@ class Engine:
                     if row is not None:
                         events.put(("saved", {"id": session.id, "updated_at": row["updated_at"]}))
                 finally:
+                    entry["stopping"] = False
                     entry["lock"].release()
                     events.put(None)
 
@@ -569,6 +584,30 @@ class Engine:
         stop()
         return True
 
+    def shutdown(self, timeout: float = 2.0) -> None:
+        """The app is quitting: stop every running answer and give each a moment to save."""
+        with self._sessions_lock:
+            entries = list({id(e): e for e in self._sessions.values()}.values())
+        for entry in entries:
+            stop = entry.get("stop")
+            if stop is not None:
+                stop()
+        deadline = time.monotonic() + timeout
+        for entry in entries:
+            if entry["lock"].acquire(timeout=max(0.0, deadline - time.monotonic())):
+                entry["lock"].release()
+
+    def rewind_chat(self, chat_id: str, session_id: str | None, from_end: int, expect: str | None, files: bool,
+                    turn: str | None = None) -> dict:
+        """Forget one of the user's messages and everything after it (to edit and send it again)."""
+        entry, session = self._idle_session(chat_id, session_id)
+        try:
+            return session.rewind(from_end, expect, files, turn=turn)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        finally:
+            entry["lock"].release()
+
     def rename_chat(self, session_id: str, title: str) -> None:
         db = self.history_db()
         if db is None:
@@ -599,6 +638,8 @@ class Engine:
                 acquired = entry["lock"].acquire(blocking=False)
         except Exception as exc:
             raise HTTPException(409, friendly_error(exc, self.settings["provider"])) from exc
+        if not acquired and entry.get("stopping"):  # just stopped: its model call is still returning
+            acquired = entry["lock"].acquire(timeout=STOP_WAIT_S)
         if not acquired:
             raise HTTPException(409, "This chat is still answering. Wait for it or stop it first.")
         return entry, entry["session"]
@@ -899,6 +940,22 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(400, "Send a title.")
         engine.rename_chat(session_id, " ".join(title.split())[:80])
         return {"ok": True}
+
+    @app.post("/api/chats/{chat_id}/rewind", dependencies=[Depends(auth)])
+    async def rewind_chat(request: Request, chat_id: str):
+        body = await json_body(request)
+        if not CHAT_ID.match(chat_id) or not isinstance(body, dict):
+            raise HTTPException(400, "chat_id must be 1-64 letters, digits, - or _.")
+        sid, n, expect, turn = body.get("session_id"), body.get("from_end"), body.get("text"), body.get("turn")
+        if turn is not None and (not isinstance(turn, str) or not re.fullmatch(r"vesper-turn-\d{1,20}", turn)):
+            raise HTTPException(400, "Bad turn id.")
+        if sid is not None and (not isinstance(sid, str) or not SESSION_ID.match(sid)):
+            raise HTTPException(400, "Bad session id.")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            raise HTTPException(400, "from_end must be a number from 0.")
+        if expect is not None and not isinstance(expect, str):
+            raise HTTPException(400, "text must be a string.")
+        return await run_in_threadpool(engine.rewind_chat, chat_id, sid, n, expect, bool(body.get("files")), turn)
 
     @app.post("/api/chats/{chat_id}/stop", dependencies=[Depends(auth)])
     def stop_chat(chat_id: str):

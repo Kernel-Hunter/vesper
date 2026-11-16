@@ -1,7 +1,7 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { Task } from '../connection/api'
 import type { Msg, Thought } from '../store/store'
-import { retry, runPlan, toast, undoChanges, useStore } from '../store/store'
+import { retry, rewindTo, runPlan, toast, undoChanges, useStore } from '../store/store'
 import { TOOL_VERBS, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
@@ -41,7 +41,54 @@ function TaskList({ items }: { items: Task[] }) {
   )
 }
 
-function UserMessage({ msg }: { msg: Msg }) {
+function UserMessage({ msg, chatId }: { msg: Msg; chatId: string }) {
+  const busy = useStore(s => s.streamingIds.includes(chatId))
+  const [mode, setMode] = useState<'view' | 'edit' | 'rewind'>('view')
+  const [text, setText] = useState(msg.text)
+  const [files, setFiles] = useState(false)
+  const [working, setWorking] = useState(false)
+  const box = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (mode !== 'edit') return
+    const el = box.current
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
+  }, [mode])
+  const copy = (): void => {
+    void navigator.clipboard.writeText(msg.text).then(() => toast('Copied'), () => toast('Copy failed', 'error'))
+  }
+  const go = async (opts: { files: boolean; edit?: string }): Promise<void> => {
+    setWorking(true)
+    const ok = await rewindTo(chatId, msg.id, opts)
+    setWorking(false)
+    if (!ok) return
+    setMode('view')
+  }
+  const filesBox = (
+    <label className="rewind-files">
+      <input type="checkbox" checked={files} onChange={e => setFiles(e.target.checked)} />
+      Also put back files Vesper changed after this message
+    </label>
+  )
+  if (mode === 'edit') {
+    return (
+      <div className="msg user">
+        <div className="user-col editing">
+          <textarea ref={box} className="edit-box" value={text} onChange={e => setText(e.target.value)} rows={Math.min(12, text.split('\n').length + 1)}
+            aria-label="Edit your message"
+            onKeyDown={e => {
+              if (e.key === 'Escape') { e.preventDefault(); setMode('view'); setText(msg.text) }
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && text.trim()) { e.preventDefault(); void go({ files, edit: text }) }
+            }} />
+          {filesBox}
+          <div className="edit-actions">
+            <span className="dim">Sending forgets this message and everything after it.{msg.attachments?.length ? ' Attachments are not sent again: add them with +.' : ''}</span>
+            <button type="button" className="btn" onClick={() => { setMode('view'); setText(msg.text) }}>Cancel</button>
+            <button type="button" className="btn primary" disabled={!text.trim() || working || busy} onClick={() => void go({ files, edit: text })}>Send</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="msg user">
       <span className="prompt" aria-hidden="true">guest@vesper:~$</span>
@@ -57,6 +104,25 @@ function UserMessage({ msg }: { msg: Msg }) {
           </div>
         )}
         {msg.text && <div className="bubble">{msg.text}</div>}
+        {mode === 'rewind' ? (
+          <div className="rewind-card" role="dialog" aria-label="Go back to before this message">
+            <strong>Go back to before this message?</strong>
+            <span className="dim">This message and everything after it are forgotten. Its text goes back into the message box.</span>
+            {filesBox}
+            <div className="edit-actions">
+              <button type="button" className="btn" onClick={() => setMode('view')}>Cancel</button>
+              <button type="button" className="btn primary" disabled={working || busy} onClick={() => void go({ files })}>Go back</button>
+            </div>
+          </div>
+        ) : msg.text ? (
+          <div className="user-actions">
+            <button type="button" className="icon-btn sm" onClick={copy} title="Copy" aria-label="Copy message"><Icon name="copy" size={14} /></button>
+            <button type="button" className="icon-btn sm" disabled={busy} onClick={() => { setText(msg.text); setMode('edit') }}
+              title={busy ? 'Stop the answer first' : 'Edit and send again'} aria-label="Edit message"><Icon name="edit" size={14} /></button>
+            <button type="button" className="icon-btn sm" disabled={busy} onClick={() => setMode('rewind')}
+              title={busy ? 'Stop the answer first' : 'Go back to before this message'} aria-label="Rewind to before this message"><Icon name="undo" size={14} /></button>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -159,5 +225,5 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
 }
 
 export const Message = memo(function Message({ msg, chatId, last }: { msg: Msg; chatId: string; last: boolean }) {
-  return msg.role === 'user' ? <UserMessage msg={msg} /> : <BotMessage msg={msg} chatId={chatId} last={last} />
+  return msg.role === 'user' ? <UserMessage msg={msg} chatId={chatId} /> : <BotMessage msg={msg} chatId={chatId} last={last} />
 })
