@@ -82,3 +82,18 @@ def test_engine_uses_env_token_and_port(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_engine_entry_never_starts_a_second_engine_for_helper_processes():
+    """Python launches helpers (the multiprocessing resource tracker) as `<binary> -c ...`.
+    The engine binary must run or refuse them, never start another engine that outlives the app."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    entry = Path(__file__).resolve().parent.parent / "packaging" / "engine_entry.py"
+    done = subprocess.run([sys.executable, str(entry), "-B", "-S", "-I", "-c",
+                           "from multiprocessing.resource_tracker import main;main(0)"],
+                          capture_output=True, text=True, timeout=30)
+    assert done.returncode != 0 and "unsupported arguments" in done.stderr
+    assert "VESPER_READY" not in done.stdout
