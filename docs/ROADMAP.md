@@ -15,6 +15,7 @@ Amp, Warp, GitHub Copilot and Continue.
   joins it before the agent's next step; one that arrives too late goes out when it ends.
 - **Test and lint loop** (0.14.0): `/check pytest -q` runs after the agent's edits; failures go
   back to it until they pass or three tries are used.
+- **Interface polish and studio themes** (0.17.0): depth, motion and quieter sidebar; Dusk, Graphite and Carbon themes; text size, density, width, font and message style settings.
 - **Small model** (0.16.0): titles and summaries on a cheaper model you pick (`/small`).
 - **Review pane** (0.15.0): every file the chat changed with its diff against the first copy,
   comments on a line that go into the next message, and revert per file.
