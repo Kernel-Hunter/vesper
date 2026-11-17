@@ -390,5 +390,6 @@ def test_background_commands_ask_like_any_command_and_are_capped(tmp_path, monke
     wsmod.stop_all_jobs()  # what quitting does
     assert not ws.jobs[1].running
     import os
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    if os.name == "posix":  # signal 0 only probes a process on POSIX; Windows has no such probe
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
