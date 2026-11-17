@@ -140,6 +140,9 @@ export interface Usage {
   seconds: number
   tools: number
   estimated?: boolean
+  /** Dollars at list prices for this turn, and for the chat so far; null when the price is unknown. */
+  cost?: number | null
+  total_cost?: number | null
   context_report?: ContextReport
   last_call?: { input: number; output: number; estimated: boolean } | null
 }

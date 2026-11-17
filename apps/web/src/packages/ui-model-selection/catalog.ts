@@ -40,6 +40,13 @@ export function priceTitle(m: ModelInfo): string {
   return `${money(m.input)} per million input tokens, ${money(m.output)} per million output tokens${source}`
 }
 
+/** $0, $0.0004, $0.012, $1.24: enough digits to see small amounts. */
+export function formatCost(dollars: number): string {
+  if (!dollars) return '$0'
+  if (dollars < 0.01) return `$${dollars.toFixed(4)}`
+  return dollars < 1 ? `$${dollars.toFixed(3)}` : `$${dollars.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
 /** 128000 -> "128k", 1048576 -> "1M". */
 export function formatContext(tokens: number | null): string {
   if (!tokens || tokens <= 0) return ''

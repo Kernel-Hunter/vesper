@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react'
 import {
   attachFiles, COMMANDS, currentAttachments, currentBusy, currentChat, currentDraft, currentRemoteBusy, isDesktop, openSettings, pickAttachFolder, pickAttachments, pickFolder, removeAttachment,
-  runCommand, saveSettings, send, setDraft, stop, togglePlan, useStore,
+  currentQueue, queueMessage, runCommand, saveSettings, send, setDraft, stop, togglePlan, unqueue, useStore,
 } from '../store/store'
 import { Icon, type IconName } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
@@ -54,6 +54,7 @@ export function Composer() {
   const settings = useStore(s => s.server?.settings)
   const providers = useStore(s => s.server?.providers)
   const attachments = useStore(currentAttachments)
+  const queue = useStore(currentQueue)
   const chatId = useStore(s => currentChat(s)?.id ?? null)
   const draftId = useStore(s => s.currentId ?? s.newDraftId)
   const theme = useStore(s => s.appearance.theme)
@@ -90,6 +91,11 @@ export function Composer() {
 
   const submit = (): void => {
     const q = text.trim()
+    if (streaming && q && !q.startsWith('/') && !attachments.length && q.length <= MAX_LEN && dictation.phase === 'idle') {
+      queueMessage(q) // typed while it works: goes out when this answer ends
+      setText('')
+      return
+    }
     if ((!q && !attachments.length) || streaming || q.length > MAX_LEN || dictation.phase !== 'idle') return
     if (q.startsWith('/') && runCommand(q)) { setText('', draftId); return }
     setText('')
@@ -138,6 +144,17 @@ export function Composer() {
         </div>
       )}
       <form className="composer" onSubmit={e => { e.preventDefault(); submit() }}>
+        {!!queue.length && chatId && (
+          <div className="queue-row" aria-label="Messages waiting to be sent">
+            {queue.map((q, i) => (
+              <span key={`${i}:${q}`} className="queue-chip" title="Sent when the current answer ends. Click to edit.">
+                <Icon name="up" size={12} />
+                <button type="button" className="queue-text" onClick={() => { const t = unqueue(chatId, i); if (t) setText(old => old ? `${old}\n${t}` : t); ref.current?.focus() }}>{q}</button>
+                <button type="button" className="att-x" onClick={() => unqueue(chatId, i)} aria-label="Remove from the queue"><Icon name="close" size={12} /></button>
+              </span>
+            ))}
+          </div>
+        )}
         {!!attachments.length && (
           <div className="att-row">
             {attachments.map(a => (
@@ -159,7 +176,7 @@ export function Composer() {
           onChange={e => setText(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
-          placeholder={theme === 'terminal' ? 'task --here' : 'Ask Vesper to build, fix, explain or run something · / for commands'}
+          placeholder={streaming ? 'Type the next message: it is sent when this answer ends' : theme === 'terminal' ? 'task --here' : 'Ask Vesper to build, fix, explain or run something · / for commands'}
           aria-label="Message"
           spellCheck
         />

@@ -63,6 +63,7 @@ from vesper.ui import (
     diff_panel,
     err_console,
     error_panel,
+    fmt_cost,
     fmt_tokens,
     model_label,
     note,
@@ -805,6 +806,8 @@ class App:
         t.add_row("session", f"{s.id} · {len(s.history)} messages" + (f" · {s.title}" if s.title else ""))
         cached = f" ({fmt_tokens(s.tokens['cached'])} read from cache)" if s.tokens.get("cached") else ""
         t.add_row("tokens", f"{fmt_tokens(s.tokens['input'])} in{cached}, {fmt_tokens(s.tokens['output'])} out")
+        if s.tokens.get("cost") is not None and "cost" in s.tokens:
+            t.add_row("cost", f"about {fmt_cost(s.tokens['cost'])} at list prices")
         t.add_row("context", f"{fmt_tokens(s.tokens['context'])} of {fmt_tokens(s.context_tokens)} "
                              f"({min(100, round(100 * s.tokens['context'] / s.context_tokens))}%)")
         t.add_row("history", tail_path(self.store.path, 70) if self.store is not None else "off")

@@ -929,6 +929,17 @@ class Session:
         self.tokens["output"] += out
         self.tokens["cached"] += cached
         self.tokens["context"] = report["used"]
+        cost = None
+        try:
+            from vesper import providers as prov
+
+            price = prov.known_price(self.provider, self.model)
+        except Exception:  # noqa: BLE001 - a cost is a nicety
+            price = None
+        if price is not None:  # list prices; cached input is often cheaper, so this errs high
+            cost = round((inp * price["input"] + out * price["output"]) / 1_000_000, 6)
+            self.tokens["cost"] = round(self.tokens.get("cost", 0.0) + cost, 6)
         return {"input": inp, "output": out, "cached": cached, "context": report["used"], "estimated": estimated,
+                "cost": cost, "total_cost": self.tokens.get("cost") if cost is not None else None,
                 "context_report": report, "last_call": last_call,
                 "seconds": round(time.monotonic() - started, 1), "tools": tools}

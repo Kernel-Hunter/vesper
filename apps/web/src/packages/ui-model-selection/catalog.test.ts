@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterModels, formatContext, formatPrice, type ModelInfo } from './catalog'
+import { filterModels, formatContext, formatCost, formatPrice, type ModelInfo } from './catalog'
 
 const model = (over: Partial<ModelInfo>): ModelInfo => ({
   id: 'x', name: '', context: null, tools: null, input: null, output: null, free: null, price_source: null, ...over,
@@ -12,6 +12,13 @@ describe('model catalog helpers', () => {
     expect(formatPrice(model({ input: 0, output: 0, free: true, price_source: 'provider' }))).toBe('Free')
     expect(formatPrice(model({ input: 0, output: 0, free: true, price_source: 'local' }))).toBe('Local')
     expect(formatPrice(model({}))).toBe('')
+  })
+
+  it('shows costs with enough digits for small amounts', () => {
+    expect(formatCost(0)).toBe('$0')
+    expect(formatCost(0.00042)).toBe('$0.0004')
+    expect(formatCost(0.0123)).toBe('$0.012')
+    expect(formatCost(1.234)).toBe('$1.23')
   })
 
   it('shortens context sizes', () => {

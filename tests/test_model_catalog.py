@@ -232,3 +232,41 @@ def test_model_lists_check_certificates_with_certifi(monkeypatch):
     ctx = seen["context"]
     assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
     assert certifi.where()
+
+
+def test_known_price_reads_saved_lists_only_and_a_turn_reports_its_cost(tmp_path, monkeypatch):
+    import json as _json
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    from vesper import providers
+    from vesper.coder import Session
+    from vesper.workspace import Workspace
+
+    monkeypatch.setattr(providers, "_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(providers, "_http_json", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no network")))
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "models-openrouter.json").write_text(_json.dumps(
+        {"fingerprint": "x", "models": [{"id": "acme/coder", "input": 2.0, "output": 8.0}]}))
+    (tmp_path / "cache" / "openrouter-prices.json").write_text(_json.dumps(
+        {"at": 0, "prices": {"openai/gpt-4-1": {"input": 2.0, "output": 8.0, "free": False, "context": 1}}}))
+    assert providers.known_price("openrouter", "acme/coder") == {"input": 2.0, "output": 8.0}
+    assert providers.known_price("openai", "gpt-4.1") == {"input": 2.0, "output": 8.0}  # the maker's list price
+    assert providers.known_price("ollama", "qwen2.5:7b") == {"input": 0.0, "output": 0.0}
+    assert providers.known_price("openrouter", "unknown/model") is None
+
+    class Fake(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    def reply():
+        return AIMessage("hi", usage_metadata={"input_tokens": 1_000_000, "output_tokens": 500_000, "total_tokens": 1_500_000})
+    proj = tmp_path / "p"
+    proj.mkdir()
+    s = Session(Fake(disable_streaming=True, messages=iter([reply(), reply()])), Workspace(proj),
+                provider="openrouter", model="acme/coder")
+    first = next(d for e, d in list(s.ask("a")) if e == "usage")
+    assert first["cost"] == 6.0 and first["total_cost"] == 6.0  # 1M in at $2 + 0.5M out at $8
+    second = next(d for e, d in list(s.ask("b")) if e == "usage")
+    assert second["total_cost"] == 12.0

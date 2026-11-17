@@ -108,6 +108,8 @@ export interface State {
   transcript: boolean
   /** Drafts and attachments stay with their conversation while switching. */
   drafts: Record<string, string>
+  /** Messages typed while a chat was answering; sent one by one when it finishes. */
+  queued: Record<string, string[]>
   attachments: Record<string, Attachment[]>
 }
 
@@ -126,6 +128,7 @@ let state: State = {
   historyLoaded: false,
   transcript: (() => { try { return localStorage.getItem('vesper.transcript') === '1' } catch { return false } })(),
   drafts: {},
+  queued: {},
   attachments: {},
 }
 // Chats used to be kept in this window's storage; the session database holds them now.
@@ -339,10 +342,39 @@ export function stop(): void {
   }, () => { if (aborts.get(id) === controller) controller?.abort() })
 }
 
+const NO_QUEUE: string[] = []
+export const currentQueue = (s: State): string[] => (s.currentId ? s.queued[s.currentId] ?? NO_QUEUE : NO_QUEUE)
+
+/** Keeps a message typed while the open chat is answering; it goes out when the answer ends. */
+export function queueMessage(text: string): void {
+  const id = state.currentId
+  if (!id || !text.trim()) return
+  set(s => ({ queued: { ...s.queued, [id]: [...(s.queued[id] ?? []), text.trim()] } }))
+}
+
+export function unqueue(chatId: string, index: number): string | undefined {
+  const item = state.queued[chatId]?.[index]
+  set(s => ({ queued: { ...s.queued, [chatId]: (s.queued[chatId] ?? []).filter((_, i) => i !== index) } }))
+  return item
+}
+
+/** A system notification when the window is in the background (answer ready, approval waiting). */
+export function notify(title: string, body: string): void {
+  try {
+    if (typeof Notification === 'undefined' || (!document.hidden && document.hasFocus())) return
+    if (Notification.permission === 'granted') {
+      const n = new Notification(title, { body: body.slice(0, 160), silent: false })
+      n.onclick = () => { window.focus(); n.close() }
+    } else if (Notification.permission === 'default') {
+      void Notification.requestPermission()
+    }
+  } catch { /* notifications are a nicety */ }
+}
+
 /** True when a message can be sent now; otherwise explains why with a toast. */
-function readyToSend(): boolean {
+function readyToSend(chatId?: string): boolean {
   const s = state
-  if (currentBusy(s)) return false
+  if (chatId ? s.streamingIds.includes(chatId) : currentBusy(s)) return false
   if (!s.server) { toast('Still connecting to the engine…', 'error'); return false }
   const p = s.server.providers.find(x => x.id === s.server?.settings.provider)
   if (p && p.needs_key && !p.has_key) {
@@ -353,14 +385,14 @@ function readyToSend(): boolean {
   return true
 }
 
-export async function send(text: string, opts: { retry?: boolean } = {}): Promise<void> {
+export async function send(text: string, opts: { retry?: boolean; chatId?: string } = {}): Promise<void> {
   const question = text.trim()
-  const attached = opts.retry ? [] : currentAttachments(state)
+  const attached = opts.retry || opts.chatId ? [] : currentAttachments(state)
   if (!question && !attached.length) return
-  if (!readyToSend()) return
+  if (!readyToSend(opts.chatId)) return
 
-  const attachmentKey = draftKey(state)
-  let chatId = state.currentId
+  const attachmentKey = opts.chatId ?? draftKey(state)
+  let chatId = opts.chatId ?? state.currentId
   if (!chatId || !state.chats.some(c => c.id === chatId)) {
     chatId = uid()
     draftAliases.set(attachmentKey, chatId)
@@ -475,6 +507,7 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
           set(st => ({ chats: st.chats.map(c => c.id === cid ? { ...c, contextReport: e.data.context_report, lastUsage: e.data } : c) }))
           break
         case 'approval':
+          notify('Vesper is waiting for you', `Allow ${e.data.kind === 'run' ? e.data.command ?? 'a command' : e.data.kind === 'mcp' ? e.data.mcp_tool ?? 'a tool' : e.data.path ?? e.data.url ?? 'a change'}?`)
           patchTool(t => t.name === e.data.tool && t.output === undefined && !t.approval, () => ({ approval: e.data }))
           break
         case 'approval_done':
@@ -525,6 +558,13 @@ export async function send(text: string, opts: { retry?: boolean } = {}): Promis
     const finished = state.chats.find(c => c.id === cid)
     if (finished?.sessionId && state.currentId !== cid) void updateSidebar(finished.sessionId, { unread: true })
     void loadHistory()
+    const next = state.queued[cid]?.[0]
+    if (next !== undefined && !stopped) { // typed while it worked: send it now, in the same chat
+      unqueue(cid, 0)
+      void send(next, { chatId: cid })
+    } else if (finished) {
+      notify(stopped ? 'Vesper stopped' : 'Vesper is done', finished.title || 'Your answer is ready.')
+    }
   }
 }
 

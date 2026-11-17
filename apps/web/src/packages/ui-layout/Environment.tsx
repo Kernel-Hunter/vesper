@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { compactChat, currentBusy, currentChat, folderName, isDesktop, openFolderIn, pickFolder, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
+import { formatCost } from '../ui-model-selection/catalog'
 import { percent, tokenCount } from './context'
 import { conversationChanges } from './changes'
 
@@ -21,6 +22,10 @@ export function Environment({ onClose }: { onClose: () => void }) {
   }
   const changes = useMemo(() => conversationChanges(chat?.messages ?? []), [chat?.messages])
   const usage = chat?.lastUsage
+  const chatCost = useMemo(() => {
+    const costs = (chat?.messages ?? []).map(m => m.usage?.cost).filter((c): c is number => typeof c === 'number')
+    return costs.length ? costs.reduce((a, b) => a + b, 0) : null
+  }, [chat?.messages])
   const report = chat?.contextReport
   const breakdown = report && [
     ['Instructions', report.breakdown.instructions], ['Tool definitions', report.breakdown.tools],
@@ -66,6 +71,7 @@ export function Environment({ onClose }: { onClose: () => void }) {
         <dl className="context-list">
           <div><dt>Input</dt><dd title={`${usage.input.toLocaleString()} tokens`}>{usage.estimated ? '~' : ''}{tokenCount(usage.input)}</dd></div>
           <div><dt>Output</dt><dd title={`${usage.output.toLocaleString()} tokens`}>{usage.estimated ? '~' : ''}{tokenCount(usage.output)}</dd></div>
+          {chatCost !== null && <div><dt>Cost <small>(this chat, list prices)</small></dt><dd title="Cached input is often cheaper, so the real cost can be lower">{formatCost(chatCost)}</dd></div>}
           <div><dt>Cache read <small>(included in input)</small></dt><dd title={`${(usage.cached ?? 0).toLocaleString()} tokens`}>{tokenCount(usage.cached ?? 0)}</dd></div>
         </dl>
         {usage.last_call && <p className="env-note">Last model call: {usage.last_call.estimated ? '~' : ''}{tokenCount(usage.last_call.input)} input + {usage.last_call.estimated ? '~' : ''}{tokenCount(usage.last_call.output)} output. Turn input includes repeated context across calls.</p>}

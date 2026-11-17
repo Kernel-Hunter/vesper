@@ -103,3 +103,9 @@
 .slash-item.on { background: var(--layer-2); }
 @keyframes pop-in { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .add-menu { animation: none; } }
+/* Messages typed while an answer runs */
+.queue-row { display: flex; flex-direction: column; gap: 4px; padding: 2px 0 6px; }
+.queue-chip { display: flex; align-items: center; gap: 7px; max-width: 100%; padding: 4px 4px 4px 9px; border-radius: var(--r-sm); border: 1px dashed var(--line-2); background: var(--layer-1); color: var(--text-2); font-size: 12.5px; animation: pop var(--t-mid) var(--ease); }
+.queue-chip svg { flex: none; color: var(--accent); }
+.queue-text { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
+.queue-text:hover { color: var(--text); }

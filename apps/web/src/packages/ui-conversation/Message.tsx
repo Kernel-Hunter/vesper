@@ -1,3 +1,4 @@
+import { formatCost } from '../ui-model-selection/catalog'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { Task } from '../connection/api'
 import type { Msg, Thought } from '../store/store'
@@ -201,6 +202,7 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
             {seconds(msg.usage.seconds)}
             {msg.usage.tools ? ` · ${msg.usage.tools} tool call${msg.usage.tools === 1 ? '' : 's'}` : ''}
             {` · ${msg.usage.estimated ? '~' : ''}${count(msg.usage.input)} in${msg.usage.cached ? ` (${count(msg.usage.cached)} cached)` : ''}, ${msg.usage.estimated ? '~' : ''}${count(msg.usage.output)} out`}
+            {msg.usage.cost != null && <span title="About this much at the provider's list prices; cached input is often cheaper">{` · ${formatCost(msg.usage.cost)}`}</span>}
             {msg.undone ? ' · changes undone' : ''}
           </div>
         )}

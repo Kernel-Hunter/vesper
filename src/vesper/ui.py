@@ -235,9 +235,20 @@ def turn_footer(usage: dict, context_tokens: int) -> Text:
     approx = "~" if usage.get("estimated") else ""
     cached = f" ({fmt_tokens(usage['cached'])} cached)" if usage.get("cached") else ""
     parts.append(f"{approx}{fmt_tokens(usage['input'])} in{cached}, {approx}{fmt_tokens(usage['output'])} out")
+    if usage.get("cost") is not None:
+        parts.append(fmt_cost(usage["cost"]) + (f" (chat {fmt_cost(usage['total_cost'])})" if usage.get("total_cost") else ""))
     if context_tokens:
         parts.append(f"context ~{round(100 * usage['context'] / context_tokens)}%")
     return Text("  ✓ " + " · ".join(parts), style=MUTED)
+
+
+def fmt_cost(dollars: float) -> str:
+    """$0 for free, then enough digits to see small amounts: $0.0004, $0.012, $1.24."""
+    if not dollars:
+        return "$0"
+    if dollars < 0.01:
+        return f"${dollars:.4f}"
+    return f"${dollars:.3f}" if dollars < 1 else f"${dollars:,.2f}"
 
 
 def tasks_block(items: list[dict]) -> Text:

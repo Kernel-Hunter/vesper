@@ -545,6 +545,30 @@ def model_catalog(provider: str, timeout: float = CATALOG_TIMEOUT) -> dict:
     return {"models": models, "live": True, "error": None, "fetched_at": now}
 
 
+def known_price(provider: str, model: str) -> dict | None:
+    """{"input", "output"} in dollars per million tokens from the saved lists, or None.
+
+    Never touches the network: it reads the provider's last model list and the saved public
+    price list, so working out a cost cannot slow an answer down.
+    """
+    p = PROVIDERS.get(provider)
+    if p is None or not model:
+        return None
+    if p.local:
+        return {"input": 0.0, "output": 0.0}
+    saved = _read_json(_cache_dir() / f"models-{p.id}.json")
+    for m in (saved or {}).get("models", []) if isinstance(saved, dict) else []:
+        if isinstance(m, dict) and m.get("id") == model and m.get("input") is not None and m.get("output") is not None:
+            return {"input": float(m["input"]), "output": float(m["output"])}
+    vendor = PRICE_SOURCES.get(p.id)
+    cached = _read_json(_cache_dir() / "openrouter-prices.json")
+    prices = cached.get("prices", {}) if isinstance(cached, dict) else {}
+    found = prices.get(f"{vendor}/{_model_key(model)}") if vendor else None
+    if found and found.get("input") is not None and found.get("output") is not None:
+        return {"input": float(found["input"]), "output": float(found["output"])}
+    return None
+
+
 def list_models(provider: str, timeout: float = CATALOG_TIMEOUT) -> list[str]:
     """The ids from model_catalog: the live list, or the built-in suggestions when it cannot be fetched."""
     return [m["id"] for m in model_catalog(provider, timeout)["models"]]
