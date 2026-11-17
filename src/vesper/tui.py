@@ -98,6 +98,7 @@ SLASH = {
     "/undo": "put files back to how they were before Vesper's last changes",
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
+    "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
     "/mcp": "MCP servers and their tools (/mcp approve [name], /mcp restart [name])",
     "/think": "how hard reasoning models think: off | low | medium | high",
@@ -599,6 +600,28 @@ class App:
         note("Went back. Your message is in the prompt: edit it and press Enter, or clear it.")
         self._prefill = out["text"]
 
+    def check(self, arg: str) -> None:
+        from vesper import checks
+
+        root = self.workspace.root
+        try:
+            if arg.lower() in ("off", "none", "clear"):
+                checks.set_command(root, "")
+                note("Checks are off for this folder.")
+                return
+            if arg:
+                checks.set_command(root, arg)
+                note(f"After Vesper edits files here, it runs `{arg}` and fixes what fails (up to {checks.MAX_ROUNDS} tries).")
+                return
+        except ValueError as exc:
+            note(str(exc))
+            return
+        current, guess = checks.command_for(root), checks.suggest(root)
+        if current:
+            note(f"Check command: `{current}`. Change it with /check <command>, turn it off with /check off.")
+        else:
+            note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
+
     def compact(self) -> None:
         self.wait_idle()
         before = self.session.tokens["context"]
@@ -881,6 +904,8 @@ class App:
             self.rewind(arg)
         elif cmd == "/compact":
             self.compact()
+        elif cmd == "/check":
+            self.check(arg)
         elif cmd == "/permissions":
             self.permissions(arg)
         elif cmd == "/mcp":

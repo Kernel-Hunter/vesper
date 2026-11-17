@@ -41,13 +41,13 @@ TOOL_LABELS = {
     "list_files": "List", "read_file": "Read", "glob": "Find", "grep": "Search",
     "change_directory": "Go to", "write_file": "Write",
     "edit_file": "Edit", "run_command": "Run", "update_tasks": "Tasks", "web_fetch": "Fetch",
-    "web_search": "Search the web",
+    "web_search": "Search the web", "run_check": "Check",
 }
 # The argument that says most about a tool call.
 MAIN_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path", "list_files": "path",
     "change_directory": "path", "glob": "pattern", "grep": "pattern",
-    "run_command": "command", "web_fetch": "url", "web_search": "query",
+    "run_command": "command", "run_check": "command", "web_fetch": "url", "web_search": "query",
 }
 LIVE_OUTPUT_LINES = 5     # lines of a running command kept on screen
 LIVE_THOUGHT_LINES = 4    # lines of the model's thinking kept on screen while it thinks
@@ -188,7 +188,7 @@ def summarize_output(name: str, output: str, ok: bool, limit: int = 6) -> Text:
         return Text(f"{max(0, len(lines) - 1)} entries", style=MUTED)
     if name == "change_directory":
         return Text(short_path(lines[0].removeprefix("Working directory is now ")) if lines else "", style=MUTED)
-    if name == "run_command":
+    if name in ("run_command", "run_check"):
         head = lines[0] if lines else ""
         body = [line for line in lines[1:] if line.strip()]
         rest = body[:limit]

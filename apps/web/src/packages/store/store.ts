@@ -507,7 +507,7 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
             () => ({ output: e.data.output, ok: e.data.ok, ms: e.data.ms ?? undefined, live: undefined }))
           break
         case 'output':
-          patchTool(t => t.name === 'run_command' && t.output === undefined,
+          patchTool(t => (t.name === 'run_command' || t.name === 'run_check') && t.output === undefined,
             t => ({ live: ((t.live ?? '') + e.data.line + '\n').slice(-MAX_TOOL_OUTPUT) }))
           break
         case 'auto':
@@ -869,7 +869,20 @@ export const COMMANDS: { name: string; hint: string }[] = [
   { name: '/delete', hint: 'delete this conversation' },
   { name: '/model', hint: 'pick a model' },
   { name: '/permissions', hint: 'what runs without asking' },
+  { name: '/check', hint: 'tests or lint after edits: /check npm test, /check off' },
 ]
+
+/** `/check`: show, set or (with "off") remove the check command of the working folder. */
+export async function setCheckCommand(arg: string): Promise<void> {
+  const folder = currentChat(state)?.cwd || state.server?.settings.workspace || state.server?.home || ''
+  try {
+    const off = /^(off|none|clear)$/i.test(arg.trim())
+    const res = arg.trim() ? await api.setCheck(folder, off ? '' : arg.trim()) : await api.check(folder)
+    window.dispatchEvent(new Event('vesper:check-changed'))
+    toast(res.command ? `After edits, Vesper runs ${res.command} and fixes what fails.`
+      : `No check command for this folder.${res.suggestion ? ` Try /check ${res.suggestion}` : ' Set one with /check <command>.'}`)
+  } catch (e) { toast(errorText(e), 'error') }
+}
 
 /** Slash commands typed in the composer. Returns true when the text was one. */
 export function runCommand(text: string): boolean {
@@ -896,6 +909,7 @@ export function runCommand(text: string): boolean {
     case '/delete':
       if (chat) void deleteSession(chat.sessionId ?? chat.id)
       return true
+    case '/check': void setCheckCommand(rest.join(' ')); return true
     default: return false
   }
 }

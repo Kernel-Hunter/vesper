@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import before_model, wrap_model_call
+from langchain.agents.middleware import after_model, before_model, wrap_model_call
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -140,6 +140,7 @@ def split_thinking(text: str) -> tuple[str, str]:
             "".join(t for k, t in parts if k == "token").strip())
 
 
+CHECK_KEY = "vesper_check"  # on the message that hands a failed check back to the agent (vesper.checks)
 STEER_KEY = "vesper_steer"  # on a message the user sent while the agent was working (Session.steer)
 MAX_STEER_CHARS = 20_000
 SHOWN_KEY = "vesper_typed"  # on a message sent by a custom command: the "/name args" the user typed
@@ -162,6 +163,14 @@ def transcript(messages: list[BaseMessage]) -> list[dict]:
     turns: list[dict] = []
     tools: dict[str, dict] = {}
     for m in messages:
+        if isinstance(m, HumanMessage) and isinstance(m.additional_kwargs.get(CHECK_KEY), dict):
+            check = m.additional_kwargs[CHECK_KEY]  # a failed check handed back: drawn as a step
+            if not turns or turns[-1]["role"] != "assistant":
+                turns.append({"role": "assistant", "parts": []})
+            turns[-1]["parts"].append({"type": "tool", "id": m.id or "", "name": "run_check",
+                                       "args": {"command": check.get("command", "")},
+                                       "output": check.get("output", ""), "ok": False})
+            continue
         if isinstance(m, HumanMessage):
             text = text_of(m.content)
             if text.startswith(SUMMARY_OPEN):  # older turns, replaced by a summary (Session.compact)
@@ -453,6 +462,9 @@ class Session:
         self._steer: list[str] = []                 # messages sent during a turn, joined at its next step
         self._steer_lock = threading.Lock()
         self._running = False                       # a turn is streaming (steering is possible)
+        self._edited = False                        # a file changed since the last check
+        self._check_rounds = 0                      # failed checks handed back in this turn
+        self.emit = None                            # front ends that can show events at once set this
         workspace.on_cwd = self._on_cwd
         workspace.on_change = self._on_change
         workspace.on_tasks = lambda items: self._pending.append(("tasks", {"items": [dict(t) for t in items]}))
@@ -591,7 +603,62 @@ class Session:
             return {"messages": [HumanMessage("\n\n".join(texts), id=f"{TURN_ID_PREFIX}{session._turn_id}",
                                               additional_kwargs={STEER_KEY: texts})]}
 
-        return [guard, steering, *prov.agent_middleware(self._llm)]
+        @after_model(can_jump_to=["model"])
+        def check(state, runtime):
+            # The agent says it is done: run the project's checks if it changed files.
+            last = state["messages"][-1] if state["messages"] else None
+            if not isinstance(last, AIMessage) or last.tool_calls:
+                return None
+            return session._run_check()
+
+        return [guard, steering, check, *prov.agent_middleware(self._llm)]
+
+    # ---------------------------------------------------------------- checks
+    def _event(self, kind: str, data: dict) -> None:
+        if self.emit is not None:
+            self.emit(kind, data)
+        else:
+            self._pending.append((kind, data))
+
+    def _run_check(self) -> dict | None:
+        """Run the check command after edits; on failure, hand its output back to the agent."""
+        from vesper import checks
+        from vesper.workspace import _middle
+
+        ws = self.workspace
+        if not self._edited or ws.stopped or ws.mode == "plan" or self._check_rounds >= checks.MAX_ROUNDS:
+            return None
+        command = checks.command_for(ws.root)
+        if not command:
+            return None
+        self._edited = False
+        call_id = f"check-{self._turn_id}-{self._check_rounds}"
+        self._event("tool_start", {"id": call_id, "name": "run_check", "args": {"command": command}})
+        began = time.monotonic()
+        try:
+            code, out = ws._run(command, checks.TIMEOUT_S)
+        except OSError as exc:
+            code, out = -1, f"Could not start the check: {exc}"
+        ms = int((time.monotonic() - began) * 1000)
+        if ws.stopped:
+            self._event("tool_end", {"id": call_id, "name": "run_check", "output": "Stopped.", "ok": False, "ms": ms})
+            return None
+        ok = code == 0
+        tail = _middle(out, 6000).strip()
+        shown = f"exit code {code}\n{tail}".strip() if code is not None else f"timed out after {checks.TIMEOUT_S} s\n{tail}"
+        self._event("tool_end", {"id": call_id, "name": "run_check", "output": shown, "ok": ok, "ms": ms})
+        self._log("check", "run_check", {"command": command, "output": tail}, ok, ms)
+        if ok:
+            return None
+        self._check_rounds += 1
+        if self._check_rounds >= checks.MAX_ROUNDS:
+            self._event("notice", {"text": f"The checks still fail after {checks.MAX_ROUNDS} tries, so Vesper stopped fixing. "
+                                            "Look at the last check's output."})
+            return None
+        self._turn_id = max(int(time.time() * 1000), self._turn_id + 1)
+        note = HumanMessage(checks.failure_prompt(command, code, tail), id=f"vesper-check-{self._turn_id}",
+                            additional_kwargs={CHECK_KEY: {"command": command, "code": code, "output": shown}})
+        return {"messages": [note], "jump_to": "model"}
 
     # ---------------------------------------------------------------- steering
     def steer(self, text: str) -> bool:
@@ -660,6 +727,7 @@ class Session:
     # ---------------------------------------------------------------- undo
     def _on_change(self, path: Path, before: bytes | None) -> None:
         """A tool is about to write `path`: keep what was there (once per turn and file)."""
+        self._edited = True
         if any(turn == self._turn_id and p == str(path) for turn, p, _ in self._copies):
             return
         if before is not None and len(before) > MAX_CHECKPOINT_BYTES:
@@ -734,7 +802,8 @@ class Session:
     def user_turns(self) -> list[int]:
         """Positions in the history of the user's own messages (not the summary of older turns)."""
         return [i for i, m in enumerate(self.history)
-                if isinstance(m, HumanMessage) and not text_of(m.content).startswith(SUMMARY_OPEN)]
+                if isinstance(m, HumanMessage) and not text_of(m.content).startswith(SUMMARY_OPEN)
+                and CHECK_KEY not in m.additional_kwargs]
 
     def rewind(self, from_end: int, expect: str | None = None, files: bool = False, turn: str | None = None) -> dict:
         """Go back to before one of the user's messages: it and everything after it are forgotten.
@@ -805,6 +874,7 @@ class Session:
         """`shown` is what the user typed when `text` also carries attached files (for titles and logs).
         `images` are image content blocks (`attachments.image_block`), sent with this message only."""
         self.workspace.stopped = False
+        self._edited, self._check_rounds = False, 0
         self.workspace._seen.clear()
         self._ensure_saved(shown or text)
         self._log("prompt", detail={"text": shown or text})

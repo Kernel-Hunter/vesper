@@ -147,6 +147,8 @@ export interface Usage {
   last_call?: { input: number; output: number; estimated: boolean } | null
 }
 
+export interface CheckState { folder: string; command: string; suggestion: string }
+
 export type StreamEvent =
   | { event: 'token'; data: { text: string } }
   | { event: 'error'; data: { message: string } }
@@ -249,6 +251,13 @@ export const api = {
   forkSession: async (id: string): Promise<string> =>
     ((await (await request(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: 'POST' })).json()) as { id: string }).id,
   /** Stops a running answer in the engine (ends its command, refuses further tools). */
+  /** The check command (tests or lint after edits) of a folder, and a guess from its files. */
+  check: async (folder: string): Promise<CheckState> =>
+    (await (await request(`/api/check?folder=${encodeURIComponent(folder)}`)).json()) as CheckState,
+  setCheck: async (folder: string, command: string): Promise<CheckState> =>
+    (await (await request('/api/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder, command }),
+    })).json()) as CheckState,
   /** Adds a message to the running answer of a chat; false when nothing is running there. */
   steerChat: async (chatId: string, text: string): Promise<boolean> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/steer`, {

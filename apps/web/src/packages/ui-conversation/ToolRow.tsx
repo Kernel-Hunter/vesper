@@ -19,6 +19,7 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   web_search: { verb: 'Search the web', icon: 'globe', arg: 'query' },
   update_tasks: { verb: 'Tasks', icon: 'list', arg: '' },
   command_output: { verb: 'Check output', icon: 'terminal', arg: 'job' },
+  run_check: { verb: 'Check', icon: 'check', arg: 'command' },
   mcp_find: { verb: 'Find tools', icon: 'plug', arg: 'query' },
   mcp_call: { verb: 'Use', icon: 'plug', arg: 'tool' },
 }
@@ -40,7 +41,7 @@ function summary(step: ToolStep): string {
     case 'grep': return out.startsWith('No ') ? short(out, 100) : `${lines.length} match${lines.length === 1 ? '' : 'es'}`
     case 'web_fetch': return `${out.length.toLocaleString()} characters`
     case 'web_search': return `${lines.filter(l => /^\d+\. /.test(l)).length} results`
-    case 'run_command': return short(lines[0] ?? 'done', 100)
+    case 'run_command': case 'run_check': return short(lines[0] ?? 'done', 100)
     default: return short(lines[0] ?? 'done', 120)
   }
 }
@@ -60,7 +61,7 @@ function Diff({ text }: { text: string }) {
 
 /** What the call was asked to do, in full: the command line, or the edit as a diff. */
 function Detail({ step }: { step: ToolStep }) {
-  if (step.name === 'run_command') return <pre className="diff cmd">$ {String(step.args.command ?? '')}</pre>
+  if (step.name === 'run_command' || step.name === 'run_check') return <pre className="diff cmd">$ {String(step.args.command ?? '')}</pre>
   const diff = step.diff ?? step.approval?.diff ?? argsDiff(step)
   return diff ? <Diff text={diff} /> : null
 }
@@ -161,10 +162,10 @@ export function ToolRow({ step, chatId, msgId, expanded = false }: { step: ToolS
   )
 }
 
-type Kind = 'read' | 'search' | 'edit' | 'run' | 'web' | 'other'
+type Kind = 'read' | 'search' | 'edit' | 'run' | 'check' | 'web' | 'other'
 const KIND: Record<string, Kind> = {
   read_file: 'read', list_files: 'search', glob: 'search', grep: 'search',
-  edit_file: 'edit', write_file: 'edit', run_command: 'run', command_output: 'run',
+  edit_file: 'edit', write_file: 'edit', run_command: 'run', command_output: 'run', run_check: 'check',
   web_fetch: 'web', web_search: 'web',
 }
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : `${n} ${many}`)
@@ -182,6 +183,7 @@ export function groupSummary(steps: ToolStep[]): string {
     search: n => `searched ${n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`}`,
     edit: n => `edited ${plural(n, 'a file', 'files')}`,
     run: n => `ran ${plural(n, 'a command', 'commands')}`,
+    check: n => `ran checks${n > 1 ? ` ${n} times` : ''}`,
     web: n => `used the web ${n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`}`,
     other: n => `used ${plural(n, 'a tool', 'tools')}`,
   }

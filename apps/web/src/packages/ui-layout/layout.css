@@ -153,3 +153,11 @@ button.status:hover { background: var(--layer-1); color: var(--text); }
 .side-scope { margin: 0 12px 6px; }
 .side-scope button { flex: 1; }
 
+
+.env-ok { color: var(--ok) !important; font-weight: 600 !important; }
+.env-check { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 10px; padding: 7px 9px; border-radius: var(--r-sm); background: var(--layer-1); text-align: left; }
+.env-check:hover { background: var(--layer-2); }
+.env-check svg { flex: none; color: var(--ok); }
+.env-check code, .env-links code { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-check-form { margin-top: 10px; }
+.env-check-form .input { width: 100%; height: 32px; font-family: var(--mono); font-size: 12px; }

@@ -153,6 +153,21 @@ it and everything after it, then puts its text back in the prompt so you can cha
 send it again. It asks whether to also put back the files changed since then (this works
 for the last 20 messages).
 
+### Tests and lint after every edit
+
+Give a project a check command and Vesper runs it each time it finishes a change:
+
+```text
+/check pytest -q        # or npm test, cargo test, go test ./..., ruff check .
+/check                  # show the command, or a suggestion from the project's files
+/check off
+```
+
+If the check fails, its output goes back to the agent, which fixes the cause and tries
+again, up to three times. Answers that change no files skip the check. In the desktop app
+the Environment panel has the same setting, with a one-click suggestion. The command is
+saved for the folder in `~/.vesper/config.json`, so a cloned repository cannot set one.
+
 ### Documents
 
 `read_file` reads more than code and text. Word (`.docx`), PowerPoint (`.pptx`), Excel
@@ -470,7 +485,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.13.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.14.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

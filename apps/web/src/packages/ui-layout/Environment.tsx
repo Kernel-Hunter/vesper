@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
-import { compactChat, currentBusy, currentChat, folderName, isDesktop, openFolderIn, pickFolder, useStore } from '../store/store'
+import { useEffect, useMemo, useState } from 'react'
+import { api, type CheckState } from '../connection/api'
+import { compactChat, currentBusy, currentChat, folderName, isDesktop, openFolderIn, pickFolder, setCheckCommand, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { formatCost } from '../ui-model-selection/catalog'
 import { percent, tokenCount } from './context'
@@ -20,6 +21,16 @@ export function Environment({ onClose }: { onClose: () => void }) {
     setContextDetails(next)
     try { localStorage.setItem('vesper.contextDetails', next ? '1' : '0') } catch { /* storage is optional */ }
   }
+  const [check, setCheck] = useState<CheckState | null>(null)
+  const [editingCheck, setEditingCheck] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    const load = (): void => { api.check(workspace).then(c => { if (live) setCheck(c) }, () => { if (live) setCheck(null) }) }
+    load()
+    window.addEventListener('vesper:check-changed', load)
+    return () => { live = false; window.removeEventListener('vesper:check-changed', load) }
+  }, [workspace])
+  const saveCheck = (value: string): void => { setEditingCheck(null); void setCheckCommand(value.trim() || 'off') }
   const changes = useMemo(() => conversationChanges(chat?.messages ?? []), [chat?.messages])
   const stats = useMemo(() => changeStats(chat?.messages ?? []), [chat?.messages])
   const usage = chat?.lastUsage
@@ -79,6 +90,33 @@ export function Environment({ onClose }: { onClose: () => void }) {
         </dl>
         {usage.last_call && <p className="env-note">Last model call: {usage.last_call.estimated ? '~' : ''}{tokenCount(usage.last_call.input)} input + {usage.last_call.estimated ? '~' : ''}{tokenCount(usage.last_call.output)} output. Turn input includes repeated context across calls.</p>}
       </>}
+    </div>
+    <div className="env-section">
+      <div className="env-label">Checks {check?.command && <span className="env-ok">on</span>}</div>
+      {editingCheck !== null ? (
+        <form className="env-check-form" onSubmit={e => { e.preventDefault(); saveCheck(editingCheck) }}>
+          <input className="input" autoFocus value={editingCheck} placeholder={check?.suggestion || 'npm test, pytest -q, cargo test'}
+            aria-label="Check command" maxLength={500} onChange={e => setEditingCheck(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') setEditingCheck(null) }} />
+          <div className="env-links"><button type="submit">Save</button><button type="button" onClick={() => setEditingCheck(null)}>Cancel</button></div>
+        </form>
+      ) : check?.command ? (
+        <>
+          <button type="button" className="env-check" title="Change the check command" onClick={() => setEditingCheck(check.command)}>
+            <Icon name="check" size={14} /><code>{check.command}</code>
+          </button>
+          <p className="env-note">Runs after Vesper edits files here; failures go back to it, up to 3 times.</p>
+          <div className="env-links"><button type="button" onClick={() => saveCheck('')}>Turn off</button></div>
+        </>
+      ) : (
+        <>
+          <p className="env-detail">Run tests or lint after every edit, and let Vesper fix what fails.</p>
+          <div className="env-links">
+            {check?.suggestion && <button type="button" onClick={() => saveCheck(check.suggestion)}>Use <code>{check.suggestion}</code></button>}
+            <button type="button" onClick={() => setEditingCheck(check?.suggestion ?? '')}>{check?.suggestion ? 'Other…' : 'Set a command…'}</button>
+          </div>
+        </>
+      )}
     </div>
     <div className="env-section env-changes">
       <div className="env-label">Changes {changes.length > 0 && <span>{changes.length}</span>}</div>

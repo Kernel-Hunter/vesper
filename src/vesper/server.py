@@ -509,6 +509,7 @@ class Engine:
         # Shown live by the app: output of a running command, and edits that needed no approval.
         session.workspace.on_output = lambda line: events.put(("output", {"line": line[:2000]}))
         session.workspace.on_auto = lambda action: events.put(("auto", action))
+        session.emit = lambda kind, data: events.put((kind, data))  # checks show while they run
         def work():
             try:
                 for item in session.ask(text, shown=shown["question"], images=image_blocks):
@@ -905,6 +906,33 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         root = engine.settings["workspace"] or str(Path.home())
         return {"commands": [{k: c[k] for k in ("name", "description", "hint", "scope")} for c in find_commands(root).values()],
                 "skills": [{k: s[k] for k in ("name", "description", "scope")} for s in find_skills(root)]}
+
+    def check_folder(folder) -> Path:
+        path = Path(folder if isinstance(folder, str) and folder else engine.settings["workspace"] or Path.home()).expanduser()
+        if not path.is_dir():
+            raise HTTPException(400, "That folder does not exist.")
+        return path
+
+    @app.get("/api/check", dependencies=[Depends(auth)])
+    def get_check(folder: str = ""):
+        from vesper import checks
+
+        path = check_folder(folder)
+        return {"folder": str(path), "command": checks.command_for(path), "suggestion": checks.suggest(path)}
+
+    @app.post("/api/check", dependencies=[Depends(auth)])
+    async def set_check(request: Request):
+        from vesper import checks
+
+        body = await json_body(request)
+        if not isinstance(body, dict) or not isinstance(body.get("command", ""), str):
+            raise HTTPException(400, 'Send {"folder": "...", "command": "..."}; an empty command turns checks off.')
+        path = check_folder(body.get("folder"))
+        try:
+            command = checks.set_command(path, body.get("command", ""))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"folder": str(path), "command": command, "suggestion": checks.suggest(path)}
 
     @app.get("/api/mcp", dependencies=[Depends(auth)])
     def get_mcp():
