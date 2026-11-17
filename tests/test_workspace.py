@@ -393,3 +393,26 @@ def test_background_commands_ask_like_any_command_and_are_capped(tmp_path, monke
     if os.name == "posix":  # signal 0 only probes a process on POSIX; Windows has no such probe
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+def test_a_command_that_leaves_a_server_running_does_not_hang(tmp_path, monkeypatch):
+    """`server & check` used to block the answer forever (the server kept the output open),
+    and Stop could not end it. Now the command returns and its leftovers are stopped."""
+    import time
+
+    import vesper.workspace as wsmod
+
+    monkeypatch.setattr(wsmod, "LEFTOVER_GRACE_S", 0.5)
+    ws = Workspace(tmp_path, mode="yolo")
+    marker = tmp_path / "alive"
+    script = f'"{sys.executable}" -c "import time, pathlib; p = pathlib.Path(r\'{marker}\'); [(p.write_text(str(i)), time.sleep(0.1)) for i in range(600)]"'
+    started = time.monotonic()
+    # The subshell around the server keeps the command's output open, as it did in the real hang.
+    code, out = ws._run(f"(cd {tmp_path} && {script} > /dev/null 2>&1; true) &\necho checked", timeout=30)
+    assert time.monotonic() - started < 10
+    assert code == 0 and "checked" in out and "background=true" in out
+    time.sleep(0.5)
+    before = marker.read_text()
+    time.sleep(0.5)
+    assert marker.read_text() == before  # the leftover was stopped

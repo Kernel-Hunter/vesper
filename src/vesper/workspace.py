@@ -81,6 +81,9 @@ CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".config/gcloud", ".docker
 SECRET_NAMES = re.compile(r"(?i)^(id_(rsa|dsa|ecdsa|ed25519)|.*\.(pem|key|p12|pfx|keystore)|\.netrc|credentials)$")
 
 
+LEFTOVER_GRACE_S = 2.0  # how long a finished command's output may stay open before its leftovers are stopped
+
+
 class ToolError(Exception):
     """A problem the model should see and work around (bad path, no match, refused)."""
 
@@ -566,6 +569,7 @@ class Workspace:
         self._running.append(stop)
         if self.stopped:  # Stop was pressed while the command was starting
             stop()
+        leftovers = False
         try:
             code = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -575,10 +579,22 @@ class Workspace:
             stop()
             raise
         finally:
+            # The shell has ended, but something it started with `&` can still hold the output
+            # open (a dev server, a watcher). Waiting for it would block this answer forever, and
+            # Stop could not reach it: end what is left of the command's process group instead.
+            reader.join(timeout=LEFTOVER_GRACE_S)
+            if reader.is_alive():
+                leftovers = True
+                stop()
+                reader.join(timeout=2)
             self._running.remove(stop)
-            reader.join(timeout=2)
-            proc.stdout.close()
-        return code, "".join(chunks)
+            if not reader.is_alive():  # closing while the reader still reads would deadlock
+                proc.stdout.close()
+        out = "".join(chunks)
+        if leftovers:
+            out += ("\n[Processes this command started in the background were stopped when it ended. "
+                    "To keep a server or watcher running, use run_command with background=true.]")
+        return code, out
 
     # ---------------------------------------------------------------- background commands
     def _start_job(self, command: str) -> str:
