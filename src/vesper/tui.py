@@ -996,11 +996,17 @@ def attach_mentions(workspace, text: str, out_console) -> tuple[str, list[dict]]
     return out.message(text), out.images
 
 
-def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resume: dict | None = None) -> int:
+def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resume: dict | None = None,
+               json_out: bool = False) -> int:
     """`vesper "question"`: the answer on stdout, tool activity on stderr, no prompts.
 
     Nobody can answer an approval prompt here, so in "ask" mode edits and commands are refused.
+    With `json_out` (`--json`), stdout gets one JSON object per event instead, for scripts and CI:
+    {"type": "token" | "tool_start" | "tool_end" | ..., ...} and a last {"type": "result", ...}.
     """
+    def emit(kind: str, data: dict) -> None:
+        print(json.dumps({"type": kind, **data}, ensure_ascii=False, default=str), flush=True)
+
     from vesper import providers as prov
     from vesper.coder import Session
     from vesper.workspace import Workspace
@@ -1025,25 +1031,45 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resu
                           context_tokens=context_tokens(cfg))
         message, images = attach_mentions(ws, question, err_console)
         shown = question if message != question else None
+        usage: dict = {}
         for event, data in session.ask(message, shown=shown, images=images or None):
+            if json_out:
+                if event == "usage":
+                    usage = data
+                    data = {k: v for k, v in data.items() if k != "context_report"}  # aggregate sizes only
+                if event != "done":
+                    emit(event, data)
             if event == "token":
                 answer.append(data["text"])
             elif event == "tool_start":
                 if answer and not answer[-1].endswith("\n"):
                     answer.append("\n\n")  # text before and after a tool call are separate paragraphs
-                err_console.print(tool_start_line(data["name"], data["args"]).plain, style=MUTED)
+                if not json_out:
+                    err_console.print(tool_start_line(data["name"], data["args"]).plain, style=MUTED)
+            elif json_out:
+                continue
             elif event == "tool_end" and not data["ok"]:
                 err_console.print(tool_end_line(data["name"], data["output"], False, data.get("ms")).plain, style=MUTED)
             elif event == "notice":
                 err_console.print(data["text"], style=WARN)
     except KeyboardInterrupt:
-        err_console.print("Stopped.", style=WARN)
+        if json_out:
+            emit("result", {"ok": False, "error": "stopped", "text": "".join(answer).strip()})
+        else:
+            err_console.print("Stopped.", style=WARN)
         return 130
     except Exception as exc:  # noqa: BLE001
-        err_console.print(friendly(exc, cfg), style=ERR)
+        if json_out:
+            emit("result", {"ok": False, "error": friendly(exc, cfg), "text": "".join(answer).strip()})
+        else:
+            err_console.print(friendly(exc, cfg), style=ERR)
         return 1
     finally:
         signal.signal(signal.SIGINT, previous)
+    if json_out:
+        emit("result", {"ok": True, "text": "".join(answer).strip(), "session": session.id,
+                        "usage": {k: usage.get(k) for k in ("input", "output", "cached", "cost", "seconds", "tools")}})
+        return 0
     print("".join(answer).strip())
     return 0
 
@@ -1210,6 +1236,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="resume a conversation by id (no id: pick from a list)")
     ap.add_argument("--mode", choices=list(MODES), help="ask (default), auto-edit, yolo or plan")
     ap.add_argument("--model", help="provider/model, e.g. openai/gpt-4.1-mini or ollama/llama3.2")
+    ap.add_argument("--json", action="store_true", help="with a prompt: print one JSON object per event (for scripts and CI)")
     ap.add_argument("-v", "--version", action="version", version=f"vesper {__version__}")
     args = ap.parse_args(argv)
 
@@ -1249,7 +1276,7 @@ def main(argv: list[str] | None = None) -> int:
         question = " ".join(args.prompt)
         if piped:  # `git diff | vesper "write a commit message"`: the piped text comes with the question
             question = f"{question}\n\n<stdin>\n{piped}\n</stdin>" if question else piped
-        return print_mode(root, question, cfg, mode, store, resume)
+        return print_mode(root, question, cfg, mode, store, resume, json_out=args.json)
 
     console.print()
     if not trust_folder(root):

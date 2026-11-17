@@ -91,3 +91,20 @@ def test_terminal_runs_a_custom_command(tmp_path, monkeypatch):
     app.expand_mentions = lambda text: (text, [])
     assert app.command("/hello world") is True
     assert ran == [("Say hello to world.", "/hello world")]
+
+
+def test_one_shot_json_mode_streams_events_and_ends_with_a_result(tmp_path, monkeypatch, capsys):
+    import json
+
+    from vesper import tui
+
+    monkeypatch.setenv("VESPER_FAKE_LLM", "1")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    code = tui.print_mode(proj, "say hi", {}, "yolo", json_out=True)
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert code == 0 and rows[-1]["type"] == "result" and rows[-1]["ok"] is True
+    kinds = [r["type"] for r in rows]
+    assert "token" in kinds and "usage" in kinds and "done" not in kinds
+    assert rows[-1]["text"] and set(rows[-1]["usage"]) == {"input", "output", "cached", "cost", "seconds", "tools"}
+    assert all("context_report" not in r for r in rows)

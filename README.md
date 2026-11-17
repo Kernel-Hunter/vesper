@@ -248,6 +248,14 @@ vesper -C ~/notes --model ollama/llama3.2 "what did I write about the budget?"
 In one-shot mode nobody can answer an approval prompt, so `ask` mode refuses edits and
 commands there. Pass `--mode auto-edit` or `--mode yolo` when you want them.
 
+`--json` prints one JSON object per line instead: every event as it happens (`token`,
+`tool_start`, `tool_end`, `usage`, ...) and a last `{"type": "result", "ok": ..., "text":
+..., "session": ..., "usage": ...}`, so a script or a CI job can follow the agent:
+
+```bash
+vesper --json --mode auto-edit "fix the failing test" | jq -c 'select(.type == "result")'
+```
+
 ## Sessions and logs
 
 Every conversation is stored in a SQLite database at `~/.vesper/vesper.db`: the messages,
