@@ -1,4 +1,4 @@
-export const THEME_CHOICES = ['system', 'dark', 'light', 'midnight', 'ocean', 'forest', 'nebula', 'ember', 'rose', 'sand', 'lavender', 'sky', 'terminal', 'workbench', 'synthwave', 'pixel', 'typewriter'] as const
+export const THEME_CHOICES = ['system', 'dark', 'light', 'dusk', 'graphite', 'carbon', 'midnight', 'ocean', 'forest', 'nebula', 'ember', 'rose', 'sand', 'lavender', 'sky', 'terminal', 'workbench', 'synthwave', 'pixel', 'typewriter'] as const
 export type ThemeChoice = typeof THEME_CHOICES[number]
 export type Phosphor = 'green' | 'amber' | 'cyan' | 'white' | 'red' | 'violet' | 'pink' | 'blue'
 export type AccentChoice = 'theme' | 'coral' | 'violet' | 'blue' | 'mint' | 'rose' | 'gold' | 'custom'
@@ -17,7 +17,27 @@ export type ThemePalettes = Partial<Record<ThemeChoice, ThemeColors>>
 export interface ThemeStyle { shape?: 'square' | 'rounded'; font?: 'sans' | 'serif' | 'mono'; art?: boolean }
 export type ThemeStyles = Partial<Record<ThemeChoice, ThemeStyle>>
 
+export const TEXT_SIZES = { sm: .92, md: 1, lg: 1.08, xl: 1.16 } as const
+export type TextSize = keyof typeof TEXT_SIZES
+export type Density = 'compact' | 'comfortable' | 'spacious'
+export const READING_WIDTHS = { narrow: 660, standard: 780, wide: 980 } as const
+export type ReadingWidth = keyof typeof READING_WIDTHS
+export const UI_FONTS = {
+  system: '',
+  rounded: 'ui-rounded, "SF Pro Rounded", "Nunito", system-ui, sans-serif',
+  humanist: '"Avenir Next", Avenir, "Segoe UI Variable Text", "Segoe UI", Seravek, Ubuntu, system-ui, sans-serif',
+  serif: '"Iowan Old Style", Charter, "Palatino Linotype", Georgia, serif',
+  mono: '"SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
+} as const
+export type UiFont = keyof typeof UI_FONTS
+export type UserStyle = 'bubble' | 'plain'
+
 export interface Appearance {
+  textSize: TextSize
+  density: Density
+  width: ReadingWidth
+  font: UiFont
+  userStyle: UserStyle
   theme: ThemeChoice
   phosphor: Phosphor
   accent: AccentChoice
@@ -44,7 +64,7 @@ export const EFFECTS: { id: EffectChoice; label: string; hint: string }[] = [
 const reducedMotion = (): boolean =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
-export const DEFAULT_APPEARANCE: Appearance = { theme: 'system', phosphor: 'green', accent: 'theme', customAccent: '#a888ff', effect: 'none', intensity: 55, palettes: {}, paletteSeeds: {}, styles: {} }
+export const DEFAULT_APPEARANCE: Appearance = { textSize: 'md', density: 'comfortable', width: 'standard', font: 'system', userStyle: 'bubble', theme: 'system', phosphor: 'green', accent: 'theme', customAccent: '#a888ff', effect: 'none', intensity: 55, palettes: {}, paletteSeeds: {}, styles: {} }
 
 function validPalettes(value: unknown): ThemePalettes {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -102,7 +122,14 @@ export function withThemeColor(palettes: ThemePalettes, theme: ThemeChoice, fiel
 export function loadAppearance(): Appearance {
   try {
     const raw = JSON.parse(localStorage.getItem(APPEARANCE_KEY) ?? '{}') as Partial<Appearance>
+    const pick = <T extends string>(value: unknown, options: readonly T[], fallback: T): T =>
+      options.includes(value as T) ? (value as T) : fallback
     return {
+      textSize: pick(raw.textSize, Object.keys(TEXT_SIZES) as TextSize[], 'md'),
+      density: pick(raw.density, ['compact', 'comfortable', 'spacious'] as const, 'comfortable'),
+      width: pick(raw.width, Object.keys(READING_WIDTHS) as ReadingWidth[], 'standard'),
+      font: pick(raw.font, Object.keys(UI_FONTS) as UiFont[], 'system'),
+      userStyle: pick(raw.userStyle, ['bubble', 'plain'] as const, 'bubble'),
       theme: THEME_CHOICES.includes(raw.theme as ThemeChoice) ? (raw.theme as ThemeChoice) : DEFAULT_APPEARANCE.theme,
       phosphor: PHOSPHORS.includes(raw.phosphor as Phosphor) ? (raw.phosphor as Phosphor) : 'green',
       accent: raw.accent === 'custom' || ACCENTS.some(a => a.id === raw.accent) ? raw.accent! : 'theme',
@@ -165,6 +192,10 @@ export function activeEffect(a: Appearance): EffectChoice {
 export function applyAppearance(a: Appearance): void {
   const html = document.documentElement
   html.dataset.theme = resolvedTheme(a.theme)
+  html.dataset.density = a.density
+  html.dataset.userStyle = a.userStyle
+  html.style.zoom = a.textSize === 'md' ? '' : String(TEXT_SIZES[a.textSize])
+  html.style.setProperty('--col', `min(calc(100% - 40px), ${READING_WIDTHS[a.width]}px)`)
   html.dataset.phosphor = a.phosphor
   html.dataset.effect = activeEffect(a)
   const overrides = ['--bg', '--bg-side', '--layer-1', '--layer-2', '--layer-3', '--bubble', '--text', '--text-2', '--text-3', '--line', '--line-2', '--ok', '--warn', '--err', '--phos', '--phos-rgb', '--accent', '--accent-2', '--accent-soft', '--accent-ink', '--brand', '--brand-2', '--send-bg', '--send-fg', '--font', '--title-font', '--r-xs', '--r-sm', '--r-md', '--r-lg', '--r-xl', '--r-panel', '--user-shape', 'color-scheme']
@@ -184,6 +215,10 @@ export function applyAppearance(a: Appearance): void {
     const font = { sans: 'system-ui, sans-serif', serif: 'Georgia, serif', mono: 'Menlo, Consolas, monospace' }[style.font]
     html.style.setProperty('--font', font)
     html.style.setProperty('--title-font', font)
+  }
+  else if (UI_FONTS[a.font]) {
+    html.style.setProperty('--font', UI_FONTS[a.font])
+    html.style.setProperty('--title-font', UI_FONTS[a.font])
   }
   const palette = validPalettes(a.palettes)[a.theme] ?? {}
   const customSurfaces = !!(palette.background || palette.sidebar || palette.surface || palette.text || palette.bubble)

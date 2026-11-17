@@ -248,3 +248,11 @@
 .mcp-config:focus { border-color: var(--accent); }
 .mcp-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .mcp-actions .mcp-error { margin: 0 auto 0 0; }
+
+/* Text and layout */
+.layout-options { display: grid; gap: 14px; }
+.layout-choice { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 6px 14px; }
+.layout-label { font-size: 13px; color: var(--text-2); }
+.layout-choice .segmented { justify-self: start; flex-wrap: wrap; }
+.layout-note { grid-column: 2; font-size: 11.5px; color: var(--text-3); }
+@media (max-width: 640px) { .layout-choice { grid-template-columns: 1fr; } .layout-note { grid-column: 1; } }

@@ -44,8 +44,8 @@ function ChatRow({ row, active, onMenu }: { row: Row; active: boolean; onMenu: (
       <button type="button" className="chat-title" title={`${row.title}${row.cwd ? `\n${row.cwd}` : ''}`}
         onClick={() => { if (row.saved) void openSession(row.id); else selectChat(row.id) }}
         onDoubleClick={() => { if (row.saved) { setTitle(row.title); setEditing(true) } }}>
-        <Icon name={row.source === 'desktop' ? 'code' : 'terminal'} size={14} />
         <span className="saved-title">{row.completed && <span title="Completed">✓ </span>}{row.title || 'Untitled'}
+          {row.source !== 'desktop' && <span className="chat-source" title={`Started in the ${row.source === 'print' ? 'terminal (one-shot)' : 'terminal'}`}>term</span>}
           {row.needsApproval ? <span className="chat-attention" aria-label="Waiting for approval" title="Waiting for approval">!</span>
             : row.working ? <span className="chat-working" aria-label="Working" title="Working" />
               : row.unread ? <span className="chat-unread" aria-label="Unread" title="Unread" /> : null}</span>
@@ -148,7 +148,6 @@ export function Sidebar() {
   }, [query])
   const [scope, setScope] = useState<'all' | 'here'>('all')
   const [archived, setArchived] = useState(false)
-  const [more, setMore] = useState(false)
   const [collapsed, setCollapsed] = useState<string[]>(() => {
     try { const v: unknown = JSON.parse(localStorage.getItem('vesper.sidebar.collapsed') || '[]'); return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [] } catch { return [] }
   })
@@ -199,8 +198,8 @@ export function Sidebar() {
       <Icon name="plus" size={16} /> New <kbd>{/Mac/.test(navigator.userAgent) ? '⌘N' : 'Ctrl N'}</kbd></button>
     <label className="side-search"><Icon name="search" size={14} /><input value={query} maxLength={200} onChange={e => setQuery(e.target.value)} placeholder="Search conversations" aria-label="Search conversations" /></label>
     <button type="button" className="side-link" onClick={() => openSettings('appearance')}><Icon name="sliders" size={16} /> Customize</button>
-    <button type="button" className="side-link" aria-expanded={more} onClick={() => setMore(!more)}><span className="side-more-icon">•••</span> More <Icon name="chevron" size={13} /></button>
-    {more && <button type="button" className="side-link side-subitem" onClick={() => { setArchived(!archived); setMenu(null) }}><Icon name="folder" size={15} />{archived ? 'Conversations' : 'Archived'}</button>}
+    <button type="button" className={`side-link${archived ? ' on' : ''}`} aria-pressed={archived} onClick={() => { setArchived(!archived); setMenu(null) }}>
+      <Icon name={archived ? 'undo' : 'folder'} size={16} />{archived ? 'Back to conversations' : 'Archived'}</button>
     {!!workspace && <div className="segmented mini side-scope" role="group" aria-label="Which conversations">
       <button type="button" className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>All</button>
       <button type="button" className={scope === 'here' ? 'on' : ''} onClick={() => setScope('here')} title={workspace}>This folder</button></div>}

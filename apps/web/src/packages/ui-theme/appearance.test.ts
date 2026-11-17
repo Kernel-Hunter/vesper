@@ -109,4 +109,30 @@ describe('appearance', () => {
     vi.stubGlobal('matchMedia', () => ({ matches: true }))
     expect(activeEffect({ ...DEFAULT_APPEARANCE, effect: 'stars' })).toBe('none')
   })
+
+  it('keeps text size, density, width, font and message style, and rejects unknown values', () => {
+    const local = storage()
+    vi.stubGlobal('localStorage', local)
+    local.setItem('vesper.appearance', JSON.stringify({ textSize: 'lg', density: 'compact', width: 'wide', font: 'serif', userStyle: 'plain' }))
+    expect(loadAppearance()).toMatchObject({ textSize: 'lg', density: 'compact', width: 'wide', font: 'serif', userStyle: 'plain' })
+    local.setItem('vesper.appearance', JSON.stringify({ textSize: 'huge', density: 1, width: null, font: 'comic', userStyle: 'x', theme: 'dusk' }))
+    expect(loadAppearance()).toMatchObject({ textSize: 'md', density: 'comfortable', width: 'standard', font: 'system', userStyle: 'bubble', theme: 'dusk' })
+
+    const styles = new Map<string, string>()
+    const html = { dataset: {} as Record<string, string>, style: {
+      zoom: '', setProperty: (key: string, value: string) => styles.set(key, value), removeProperty: (key: string) => styles.delete(key),
+    }, classList: { toggle: vi.fn() } }
+    vi.stubGlobal('document', { documentElement: html })
+    vi.stubGlobal('navigator', { userAgent: 'test' })
+    vi.stubGlobal('getComputedStyle', () => ({ getPropertyValue: () => '#212121' }))
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    applyAppearance({ ...DEFAULT_APPEARANCE, textSize: 'xl', density: 'spacious', width: 'narrow', font: 'mono', userStyle: 'plain' })
+    expect(html.style.zoom).toBe('1.16')
+    expect(html.dataset).toMatchObject({ density: 'spacious', userStyle: 'plain' })
+    expect(styles.get('--col')).toContain('660px')
+    expect(styles.get('--font')).toContain('Mono')
+    applyAppearance({ ...DEFAULT_APPEARANCE, styles: { system: { font: 'serif' } }, font: 'mono' })
+    expect(styles.get('--font')).toContain('Georgia') // the theme's own type style wins
+    expect(html.style.zoom).toBe('')
+  })
 })

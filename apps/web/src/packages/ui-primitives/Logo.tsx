@@ -16,7 +16,6 @@ export function Wordmark() {
       <LogoMark size={28} />
       <div className="brand-text">
         <strong>Vesper</strong>
-        <span>Coding agent</span>
       </div>
     </div>
   )

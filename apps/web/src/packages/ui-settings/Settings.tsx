@@ -275,6 +275,11 @@ const THEME_GROUPS: { label: string; themes: ThemeCard[] }[] = [
     { id: 'dark', label: 'Dark', mood: 'Soft charcoal', bg: '#212121', side: '#303030', ink: '#92908d', accent: '#ff7a45' },
     { id: 'light', label: 'Light', mood: 'Clean and warm', bg: '#fffdfb', side: '#f8f4f1', ink: '#b7aaa2', accent: '#a83b16' },
   ] },
+  { label: 'Studio', themes: [
+    { id: 'dusk', label: 'Dusk', mood: 'Vesper’s own: indigo and starlight', bg: '#15141d', side: '#1d1b28', ink: '#a39cb6', accent: '#f2c46d' },
+    { id: 'graphite', label: 'Graphite', mood: 'Neutral, no tint', bg: '#18191b', side: '#202124', ink: '#9a9fa8', accent: '#c7d0dc' },
+    { id: 'carbon', label: 'Carbon', mood: 'True black for OLED', bg: '#000000', side: '#0b0b0c', ink: '#8f8f96', accent: '#ffffff' },
+  ] },
   { label: 'After dark', themes: [
     { id: 'midnight', label: 'Midnight', mood: 'Indigo skies', bg: '#101525', side: '#171f35', ink: '#7183a7', accent: '#b3bfff' },
     { id: 'ocean', label: 'Ocean', mood: 'Deep sea glass', bg: '#0b2028', side: '#10303a', ink: '#648f94', accent: '#73e0d0' },
@@ -357,6 +362,20 @@ function ColorControl({ label, hint, value, modified, onChange, onReset }: {
   </div>
 }
 
+function Choice<T extends string>({ label, value, options, onChange, note }: {
+  label: string; value: T; options: [T, string][]; onChange: (value: T) => void; note?: string
+}) {
+  return (
+    <div className="layout-choice">
+      <span className="layout-label">{label}</span>
+      <div className="segmented" role="group" aria-label={label}>
+        {options.map(([id, text]) => <button type="button" key={id} className={value === id ? 'on' : ''} aria-pressed={value === id} onClick={() => onChange(id)}>{text}</button>)}
+      </div>
+      {note && <small className="layout-note">{note}</small>}
+    </div>
+  )
+}
+
 function AppearanceTab() {
   const a = useStore(s => s.appearance)
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -409,6 +428,21 @@ function AppearanceTab() {
             ))}
           </div>
         </div>)}
+      </Section>
+      <Section title="Text and layout" desc="How big the text is, how much room things get, and how wide the conversation runs. Applies to every theme.">
+        <div className="layout-options">
+          <Choice label="Text size" value={a.textSize} onChange={v => setAppearance({ textSize: v })}
+            options={[['sm', 'Small'], ['md', 'Default'], ['lg', 'Large'], ['xl', 'Larger']]} />
+          <Choice label="Density" value={a.density} onChange={v => setAppearance({ density: v })}
+            options={[['compact', 'Compact'], ['comfortable', 'Comfortable'], ['spacious', 'Spacious']]} />
+          <Choice label="Conversation width" value={a.width} onChange={v => setAppearance({ width: v })}
+            options={[['narrow', 'Narrow'], ['standard', 'Standard'], ['wide', 'Wide']]} />
+          <Choice label="Your messages" value={a.userStyle} onChange={v => setAppearance({ userStyle: v })}
+            options={[['bubble', 'Bubbles'], ['plain', 'Inline']]} />
+          <Choice label="Interface font" value={a.font} onChange={v => setAppearance({ font: v })}
+            note={style.font ? 'This theme sets its own type style below; that one wins.' : undefined}
+            options={[['system', 'System'], ['rounded', 'Rounded'], ['humanist', 'Humanist'], ['serif', 'Serif'], ['mono', 'Mono']]} />
+        </div>
       </Section>
       <Section title="Color palettes" desc={a.theme === 'system' ? 'Choose a complete look, or select Original to follow your device’s colors.' : 'Choose a complete look for this theme. Each palette updates all the colors together and is saved with the theme.'}>
         <div className="palette-grid">

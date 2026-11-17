@@ -368,8 +368,11 @@ the ones still working and the ones with a new answer. Right-click a conversatio
 archive, fork it (a copy of the history to try another direction) or open it in its own
 window. The top bar shows how full the model's context is.
 
-Themes: system, dark, light, a set of color palettes, and a terminal theme with phosphor
-colors and optional background effects that pause when the window is hidden.
+Themes: system, dark and light; Dusk (Vesper's own indigo-and-starlight look), Graphite and
+Carbon (true black for OLED screens); six after-dark and three daylight palettes; and retro
+looks such as a phosphor terminal. Every theme has its own color presets and a color studio
+for exact colors. Settings, Appearance, Text and layout sets the text size, density, how wide
+the conversation runs, the interface font and whether your messages show as bubbles or inline.
 
 Start it with `vesper app`, from Launchpad or the Start menu, or with `vesper-app`.
 

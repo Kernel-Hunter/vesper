@@ -20,6 +20,7 @@ import './packages/ui-input/input.css'
 import './packages/ui-model-selection/model.css'
 import './packages/ui-settings/settings.css'
 import './packages/ui-effects/effects.css'
+import './packages/ui-theme/polish.css'
 import './packages/ui-theme/designs.css'
 
 export function App() {

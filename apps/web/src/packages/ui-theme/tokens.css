@@ -38,6 +38,8 @@
   --send-bg: #ff7a45; --send-fg: #1a0d06;
   --shadow: 0 24px 64px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
   --scrim: rgba(0, 0, 0, .55);
+  --elev: inset 0 1px 0 rgba(255, 255, 255, .045), 0 1px 1px rgba(0, 0, 0, .12), 0 14px 34px -10px rgba(0, 0, 0, .45);
+  --elev-focus: inset 0 1px 0 rgba(255, 255, 255, .05), 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent), 0 16px 38px -10px rgba(0, 0, 0, .5);
 }
 
 [data-theme="light"], [data-theme="sand"], [data-theme="lavender"], [data-theme="sky"], [data-theme="workbench"], [data-theme="typewriter"] {
@@ -63,6 +65,35 @@
   --hl-keyword: #8e3cb8; --hl-string: #2e7d32; --hl-number: #b4531c; --hl-title: #1d5fbf; --hl-type: #9a6b00; --hl-attr: #0b7285;
   --shadow: 0 24px 64px rgba(20, 20, 40, .14), 0 2px 8px rgba(20, 20, 40, .06);
   --scrim: rgba(20, 20, 30, .28);
+  --elev: inset 0 1px 0 rgba(255, 255, 255, .7), 0 1px 2px rgba(30, 20, 10, .06), 0 12px 30px -12px rgba(30, 20, 10, .18);
+  --elev-focus: inset 0 1px 0 rgba(255, 255, 255, .7), 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent), 0 14px 32px -12px rgba(30, 20, 10, .22);
+}
+
+/* ---------- studio themes ---------- */
+/* Dusk: Vesper's own look, the indigo hour with the evening star as the accent. */
+[data-theme="dusk"] {
+  --bg: #15141d; --bg-side: #1d1b28; --layer-1: #24222f; --layer-2: #2e2b3b; --layer-3: #3a3649;
+  --text: #f3f0fa; --text-2: #d6d0e4; --text-3: #a39cb6;
+  --line: rgba(220, 210, 255, .07); --line-2: rgba(220, 210, 255, .13);
+  --accent: #f2c46d; --accent-2: #f0a98c; --accent-ink: #1f1608;
+}
+/* Graphite: no tint at all, for people who want the code to carry the color. */
+[data-theme="graphite"] {
+  --bg: #18191b; --bg-side: #202124; --layer-1: #26282b; --layer-2: #303236; --layer-3: #3c3f44;
+  --text: #eceef1; --text-2: #cdd1d7; --text-3: #9a9fa8;
+  --accent: #c7d0dc; --accent-2: #8fb4d9; --accent-ink: #111316;
+}
+/* Carbon: true black, made for OLED screens and dark rooms. */
+[data-theme="carbon"] {
+  --bg: #000000; --bg-side: #0b0b0c; --layer-1: #121214; --layer-2: #1b1b1e; --layer-3: #26262a;
+  --text: #f5f5f6; --text-2: #d2d2d6; --text-3: #8f8f96;
+  --line: rgba(255, 255, 255, .08); --line-2: rgba(255, 255, 255, .14);
+  --accent: #ffffff; --accent-2: #c6f36b; --accent-ink: #000000;
+}
+[data-theme="dusk"], [data-theme="graphite"], [data-theme="carbon"] {
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --brand: var(--accent); --brand-2: var(--accent-2);
+  --bubble: var(--layer-2); --send-bg: var(--accent); --send-fg: var(--accent-ink);
 }
 
 /* ---------- curated palettes ---------- */

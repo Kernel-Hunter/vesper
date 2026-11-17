@@ -20,6 +20,18 @@ export const THEME_PALETTES: Record<ThemeChoice, readonly PaletteOption[]> = {
     palette('Porcelain', 'Cool and crisp', '#f5f7f7', '#e7edef', '#ffffff', '#202d32', '#d9e4e8', '#235a78'),
     palette('Linen', 'Soft and warm', '#f8f2e8', '#eee3d4', '#fffbf4', '#34281f', '#e6d7c5', '#8b4628'),
   ],
+  dusk: [
+    palette('Evening Star', 'Indigo and starlight', '#15141d', '#1d1b28', '#24222f', '#f3f0fa', '#2c2939', '#f2c46d'),
+    palette('Afterglow', 'Plum and rose gold', '#1a1419', '#251c23', '#2c222a', '#fbf0f3', '#352833', '#f0a98c'),
+  ],
+  graphite: [
+    palette('Pencil', 'Neutral and quiet', '#18191b', '#202124', '#26282b', '#eceef1', '#2e3034', '#c7d0dc'),
+    palette('Slate', 'Blue-grey steel', '#161a1f', '#1d232a', '#232a33', '#e9eff5', '#2b333d', '#8fb4d9'),
+  ],
+  carbon: [
+    palette('Black', 'True black for OLED', '#000000', '#0b0b0c', '#121214', '#f5f5f6', '#1a1a1d', '#ffffff'),
+    palette('Signal', 'Black with a lime signal', '#000000', '#0a0b0a', '#111311', '#f2f5ef', '#191c18', '#c6f36b'),
+  ],
   midnight: [
     palette('Moonlit', 'Silver and indigo', '#111628', '#1b2339', '#222d46', '#f1f4ff', '#303c59', '#bcd0ff'),
     palette('Astral', 'Plum night sky', '#1e1932', '#29223e', '#332a49', '#f8efff', '#403450', '#e4bdff'),
