@@ -8,14 +8,14 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Done
 
-- **MCP servers** (0.10): `~/.vesper/mcp.json` and a project's `.mcp.json`, stdio and
+- **MCP servers** (0.10.1): `~/.vesper/mcp.json` and a project's `.mcp.json`, stdio and
   Streamable HTTP, approval for project servers, approval for tools that change things,
   and `mcp_find` / `mcp_call` instead of dozens of schemas when servers offer many tools.
-- **Type while it works** (0.10): messages sent during an answer wait above the message
+- **Type while it works** (0.10.1): messages sent during an answer wait above the message
   box and go out one by one when it ends.
-- **Cost of each answer** (0.10) at list prices, and the chat's total.
-- **Custom commands and skills** (0.10), in the `.claude/commands` and `SKILL.md` formats.
-- **Notifications** (0.10) when an answer ends or waits for approval in the background.
+- **Cost of each answer** (0.10.1) at list prices, and the chat's total.
+- **Custom commands and skills** (0.10.1), in the `.claude/commands` and `SKILL.md` formats.
+- **Notifications** (0.10.1) when an answer ends or waits for approval in the background.
 - **Background commands** (0.10.1): dev servers and watchers keep running; the agent reads
   their new output and stops them.
 
