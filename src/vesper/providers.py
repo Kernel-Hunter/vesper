@@ -406,6 +406,9 @@ def _friendly_fetch_error(p: Provider, exc: Exception, timeout: float) -> str:
         return f"{p.label} did not send its model list within {timeout:.0f} seconds."
     if p.local:
         return f"{p.label} is not running."
+    if p.id == "custom":
+        return (f"Could not reach your custom server at {_base_url(p)}. Check the base URL in "
+                f"Settings, Models, Local and custom.")
     return f"Could not reach {p.label}: {str(exc)[:120]}"
 
 
