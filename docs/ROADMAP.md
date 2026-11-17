@@ -16,21 +16,22 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Cost of each answer** (0.10) at list prices, and the chat's total.
 - **Custom commands and skills** (0.10), in the `.claude/commands` and `SKILL.md` formats.
 - **Notifications** (0.10) when an answer ends or waits for approval in the background.
+- **Background commands** (0.10.1): dev servers and watchers keep running; the agent reads
+  their new output and stops them.
 
 ## Next, in order
 
 1. **Steering.** A message sent during an answer can also join it at its next step.
-2. **Background commands.** Start a dev server or a watcher, read its output later, stop it.
-3. **Headless JSON mode.** `vesper -p "task" --json` streams events for scripts and CI.
-4. **Test and lint loop.** A project test command that runs after edits; failures go back to
+2. **Headless JSON mode.** `vesper -p "task" --json` streams events for scripts and CI.
+3. **Test and lint loop.** A project test command that runs after edits; failures go back to
    the agent until they pass or it gives up.
-5. **Small-model routing.** Titles, summaries and searches on a cheap model.
-6. **Git safety net.** A commit per turn on request, and a worktree per parallel chat.
-7. **Diff review pane.** Every change of a turn file by file, accept or reject per hunk, and
+4. **Small-model routing.** Titles, summaries and searches on a cheap model.
+5. **Git safety net.** A commit per turn on request, and a worktree per parallel chat.
+6. **Diff review pane.** Every change of a turn file by file, accept or reject per hunk, and
     comments on a line that go back to the agent.
-8. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
+7. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
     gopls) go back to the agent right away.
-9. **Subagents.** A child agent with its own context for searches and side tasks.
+8. **Subagents.** A child agent with its own context for searches and side tasks.
 
 Later: hooks, memory across sessions, a browser tool, an ACP server for editors, session
 export and sharing, a checkpoint timeline, symbol and URL mentions, keybindings and a vim

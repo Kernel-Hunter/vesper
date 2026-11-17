@@ -605,6 +605,9 @@ class Engine:
         from vesper import mcp
 
         mcp.manager().close()  # the engine exits with os._exit, which skips atexit: stop the servers here
+        from vesper.workspace import stop_all_jobs
+
+        stop_all_jobs()  # and the background commands
 
     def rewind_chat(self, chat_id: str, session_id: str | None, from_end: int, expect: str | None, files: bool,
                     turn: str | None = None) -> dict:

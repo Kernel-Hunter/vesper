@@ -8,7 +8,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
 from vesper.coder import Session
-from vesper.workspace import Workspace
+from vesper.workspace import ToolError, Workspace
 
 
 @pytest.fixture
@@ -347,3 +347,48 @@ def test_stopped_workspace_refuses_tools_until_the_next_turn(ws):
     llm = ToolFake(disable_streaming=True, messages=iter([AIMessage(content="hello")]))
     list(Session(llm, ws).ask("hi"))  # a new turn clears it
     assert "Two absences" in tools(ws)["read_file"].invoke({"path": "notes.md"})
+
+
+def test_background_commands_keep_running_report_new_output_and_stop(tmp_path, monkeypatch):
+    import sys
+    import time
+
+    import vesper.workspace as wsmod
+
+    monkeypatch.setattr(wsmod, "JOB_FIRST_LOOK_S", 0.4)
+    ws = Workspace(tmp_path, mode="yolo")
+    script = tmp_path / "srv.py"
+    script.write_text("import time, sys\nprint('listening on 8080', flush=True)\n"
+                      "for i in range(100):\n    time.sleep(0.1)\n    print('tick', i, flush=True)\n")
+    started = ws.run_command(f'"{sys.executable}" -u srv.py', background=True)
+    assert "Started job 1 in the background" in started and "listening on 8080" in started
+    time.sleep(0.5)
+    out = ws.command_output(1)
+    assert out.startswith("job 1 is running") and "tick" in out and "listening" not in out  # only what is new
+    stopped = ws.command_output(1, stop=True)
+    assert "ended with exit code" in stopped and not ws.jobs[1].running
+    with pytest.raises(ToolError, match="no job 7"):
+        ws.command_output(7)
+    quick = ws.run_command("echo done-now", background=True)
+    assert "Started job 2" in quick and "done-now" in quick
+    time.sleep(0.2)
+    assert ws.command_output(2).startswith("job 2 ended with exit code 0")
+
+
+def test_background_commands_ask_like_any_command_and_are_capped(tmp_path, monkeypatch):
+    import vesper.workspace as wsmod
+
+    monkeypatch.setattr(wsmod, "JOB_FIRST_LOOK_S", 0.05)
+    asked = []
+    ws = Workspace(tmp_path, mode="ask", approve=lambda a: asked.append(a) or "yes")
+    ws.run_command("sleep 30", background=True)
+    assert asked and asked[0]["command"] == "sleep 30"
+    monkeypatch.setattr(wsmod, "MAX_JOBS", 1)
+    with pytest.raises(ToolError, match="already running"):
+        ws.run_command("sleep 30", background=True)
+    pid = ws.jobs[1].proc.pid
+    wsmod.stop_all_jobs()  # what quitting does
+    assert not ws.jobs[1].running
+    import os
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)

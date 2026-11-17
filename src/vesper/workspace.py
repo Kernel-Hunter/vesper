@@ -16,6 +16,7 @@ Tool errors come back as text starting with "Error:" so the model can recover.
 
 from __future__ import annotations
 
+import atexit
 import difflib
 import fnmatch
 import json
@@ -25,6 +26,7 @@ import signal
 import subprocess
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +46,9 @@ DEFAULT_READ_LINES = 400
 MAX_LIST_ENTRIES = 300
 MAX_MATCHES = 100
 MAX_GREP_FILE_BYTES = 2_000_000
+MAX_JOBS = 8                      # background commands running at once
+JOB_BUFFER_CHARS = 200_000        # newest output kept per background command
+JOB_FIRST_LOOK_S = 1.5            # wait before reporting a new background command's first output
 MAX_OUTPUT_CHARS = 12_000         # command output and web pages returned to the model
 MAX_WRITE_CHARS = 1_000_000
 MAX_SCAN_FILES = 50_000             # glob and grep stop walking after this many files
@@ -104,6 +109,7 @@ class Workspace:
     waited: float = 0.0  # seconds spent waiting for the user to answer approvals
     stopped: bool = False  # the user stopped the turn: tools refuse to start until the next one
     mcp_servers: list = field(default_factory=list, repr=False)  # MCP servers whose tools the agent gets
+    jobs: dict = field(default_factory=dict, repr=False)  # background commands: {number: _Job}
     _turn: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def __post_init__(self) -> None:
@@ -499,7 +505,7 @@ class Workspace:
         except web.WebError as exc:
             raise ToolError(str(exc)) from None
 
-    def run_command(self, command: str, timeout: int = 120) -> str:
+    def run_command(self, command: str, timeout: int = 120, background: bool = False) -> str:
         command = (command or "").strip()
         if not command:
             raise ToolError("Empty command.")
@@ -507,8 +513,12 @@ class Workspace:
         moved = re.fullmatch(r"cd(\s+(?P<to>[^;&|<>]+))?", command)
         if moved:  # a bare `cd`: make it last, like the user expects
             return self.change_directory((moved.group("to") or "~").strip())
+        if background and sum(j.running for j in self.jobs.values()) >= MAX_JOBS:
+            raise ToolError(f"{MAX_JOBS} background commands are already running; stop one with command_output first.")
         self._gate("run", {"tool": "run_command", "command": command, "cwd": str(self.root)},
                    strict=bool(DANGEROUS_COMMAND.search(command)))
+        if background:
+            return self._start_job(command)
         code, text = self._run(command, timeout)
         if self.stopped:
             raise ToolError(f"The user stopped this command.\n{_middle(text)}".rstrip())
@@ -569,6 +579,32 @@ class Workspace:
             reader.join(timeout=2)
             proc.stdout.close()
         return code, "".join(chunks)
+
+    # ---------------------------------------------------------------- background commands
+    def _start_job(self, command: str) -> str:
+        number = max(self.jobs, default=0) + 1
+        job = _Job(number, command, self.root)
+        self.jobs[number] = job
+        time.sleep(JOB_FIRST_LOOK_S)  # a server that fails at once says so in its first lines
+        status, out = job.read()
+        head = (f"Started job {number} in the background: it keeps running after this answer. "
+                f"Read new output with command_output(job={number}); stop it with command_output(job={number}, stop=true).")
+        return f"{head}\n{status}" + (f"\n{_middle(out).strip()}" if out.strip() else "")
+
+    def command_output(self, job: int, stop: bool = False) -> str:
+        found = self.jobs.get(int(job))
+        if found is None:
+            known = ", ".join(str(n) for n in self.jobs) or "none"
+            raise ToolError(f"There is no job {job}. Jobs: {known}.")
+        if stop:
+            found.stop()
+        status, out = found.read()
+        return f"{status}\n{_middle(out).strip()}" if out.strip() else f"{status} (no new output)"
+
+    def stop_jobs(self) -> None:
+        """End every background command (the app or the terminal is closing)."""
+        for job in list(self.jobs.values()):
+            job.stop()
 
     def cancel(self) -> None:
         """The user pressed Ctrl+C or Stop: end running commands and let no new tool start.
@@ -665,9 +701,14 @@ class Workspace:
             return safe(ws.edit_file, path, old_string, new_string, replace_all)
 
         @tool
-        def run_command(command: str, timeout: int = 120) -> str:
-            """Run a shell command in the working directory. `timeout` in seconds (max 600). Long output is cut in the middle."""
-            return safe(ws.run_command, command, timeout)
+        def run_command(command: str, timeout: int = 120, background: bool = False) -> str:
+            """Run a shell command in the working directory. `timeout` in seconds (max 600). Long output is cut in the middle. background=true for servers and watchers."""
+            return safe(ws.run_command, command, timeout, background)
+
+        @tool
+        def command_output(job: int, stop: bool = False) -> str:
+            """New output of a background command started with run_command(background=true); stop=true ends it."""
+            return safe(ws.command_output, job, stop)
 
         @tool
         def update_tasks(tasks: str) -> str:
@@ -685,12 +726,91 @@ class Workspace:
             return safe(ws.web_search, query)
 
         builtin = [list_files, read_file, glob, grep, change_directory, write_file, edit_file,
-                   run_command, update_tasks, web_fetch, web_search]
+                   run_command, command_output, update_tasks, web_fetch, web_search]
         if not ws.mcp_servers:
             return builtin
         from vesper import mcp
 
         return builtin + mcp.langchain_tools(ws.mcp_servers, lambda server, tool, args, step: safe(ws.call_mcp, server, tool, args, step))
+
+
+# -------------------------------------------------------------------- background commands
+class _Job:
+    """A command that runs on after the tool call returns (a dev server, a watcher)."""
+
+    def __init__(self, number: int, command: str, cwd: Path):
+        self.number, self.command, self.started = number, command, time.monotonic()
+        self._buf: list[str] = []
+        self._size = 0
+        self._read_to = 0
+        self._dropped = 0
+        self._lock = threading.Lock()
+        posix = os.name == "posix"
+        try:
+            self.proc = subprocess.Popen(
+                command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, start_new_session=posix,
+                env={**os.environ, "PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb"},
+                **({} if posix else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}))
+        except OSError as exc:
+            raise ToolError(f"Could not start the command: {exc.strerror or exc}") from None
+        _ALL_JOBS.add(self)
+        threading.Thread(target=self._pump, daemon=True, name=f"job-{number}").start()
+
+    def _pump(self) -> None:
+        for raw in iter(self.proc.stdout.readline, b""):
+            line = raw.decode("utf-8", errors="replace")
+            with self._lock:
+                self._buf.append(line)
+                self._size += len(line)
+                while self._size > JOB_BUFFER_CHARS and len(self._buf) > 1:  # keep the newest output
+                    gone = self._buf.pop(0)
+                    self._size -= len(gone)
+                    self._dropped += 1
+                    self._read_to = max(0, self._read_to - 1)
+        self.proc.stdout.close()
+
+    @property
+    def running(self) -> bool:
+        return self.proc.poll() is None
+
+    def read(self) -> tuple[str, str]:
+        """(status line, output since the last read)."""
+        with self._lock:
+            new = "".join(self._buf[self._read_to:])
+            self._read_to = len(self._buf)
+        seconds = int(time.monotonic() - self.started)
+        code = self.proc.poll()
+        status = (f"job {self.number} is running ({seconds} s): {self.command}" if code is None
+                  else f"job {self.number} ended with exit code {code}: {self.command}")
+        return status, new
+
+    def stop(self) -> None:
+        if self.proc.poll() is not None:
+            return
+        try:
+            if os.name == "posix":
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            else:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True, check=False)
+        except (OSError, ProcessLookupError):
+            self.proc.kill()
+        try:
+            self.proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+_ALL_JOBS: "weakref.WeakSet[_Job]" = weakref.WeakSet()
+
+
+def stop_all_jobs() -> None:
+    """Every background command of this process (the program is exiting)."""
+    for job in list(_ALL_JOBS):
+        job.stop()
+
+
+atexit.register(stop_all_jobs)
 
 
 # -------------------------------------------------------------------- helpers

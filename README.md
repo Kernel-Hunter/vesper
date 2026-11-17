@@ -391,6 +391,9 @@ An agent that can edit files and run commands should be boring about permissions
   user can. The first time you start it somewhere, it says so and asks whether to continue.
 - **Ctrl+C stops everything.** It ends the answer, kills any command the agent started,
   and no further tool runs until your next message.
+- **Background commands end with Vesper.** The agent can start a dev server or a watcher
+  in the background (it asks first, like any command), read its new output later and
+  stop it. At most eight run at once, and quitting the app or the terminal stops them all.
 - **File contents are data.** The system prompt tells the model to treat what it reads as
   data, never as instructions. That lowers the risk of prompt injection from a hostile
   file, but no model is immune, which is why the approval prompt exists.
@@ -411,7 +414,8 @@ Found a security problem? Please report it privately, see [SECURITY.md](SECURITY
                                  │  LangGraph create_agent loop
                                  ▼
                workspace.Workspace: list_files, read_file, glob, grep, web_fetch,
-               web_search, change_directory, write_file, edit_file, run_command
+               web_search, change_directory, write_file, edit_file, run_command,
+               command_output, update_tasks, and the tools of MCP servers (mcp.py)
                                  │
                                  ▼
                store.Store: ~/.vesper/vesper.db (sessions, messages, events)
