@@ -73,6 +73,8 @@ DEFAULTS = {
     "workspace": "",
     "agent_mode": "ask",
     "thinking": "off",
+    "small_provider": "",
+    "small_model": "",
 }
 
 
@@ -138,8 +140,12 @@ def _check_field(name: str, value) -> object:
         if value not in prov.PROVIDERS:
             _bad(f"Unknown provider {str(value)[:50]!r}.")
         return value
-    if name == "model":
+    if name in ("model", "small_model"):
         return _text_field(name, value, MAX_MODEL_LEN)
+    if name == "small_provider":
+        if value not in ("", *prov.PROVIDERS):
+            _bad(f"Unknown provider {str(value)[:50]!r}.")
+        return value
     if name == "agent_mode":
         if value not in AGENT_MODES:
             _bad("agent_mode must be ask, auto-edit, yolo or plan.")
@@ -352,6 +358,18 @@ class Engine:
             self._llm_key = key
         return self._llm
 
+    def small_llm(self):
+        """The model for summaries and titles (None: the main model does them)."""
+        s = self.settings
+        key = (s["small_provider"], s["small_model"])
+        if getattr(self, "_small_key", None) != key:
+            try:
+                self._small = prov.get_small_llm(*key)
+            except Exception:  # noqa: BLE001 - a broken small model falls back to the main one
+                self._small = None
+            self._small_key = key
+        return self._small
+
     def stream_answer(self, question: str, chat_id: str | None = None, history: list | None = None,
                       session_id: str | None = None, attachments: list | None = None, images: list | None = None,
                       retry: bool = False, workspace: str | None = None):
@@ -510,6 +528,7 @@ class Engine:
         session.workspace.on_output = lambda line: events.put(("output", {"line": line[:2000]}))
         session.workspace.on_auto = lambda action: events.put(("auto", action))
         session.emit = lambda kind, data: events.put((kind, data))  # checks show while they run
+        session.small_llm = self.small_llm()
         def work():
             try:
                 for item in session.ask(text, shown=shown["question"], images=image_blocks):
@@ -692,6 +711,7 @@ class Engine:
         entry, session = self._idle_session(chat_id, session_id)
         try:
             before = session.tokens["context"]
+            session.small_llm = self.small_llm()
             done = session.compact()
             from vesper.coder import context_report
 

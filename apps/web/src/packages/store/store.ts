@@ -513,6 +513,12 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
         case 'auto':
           if (e.data.diff) patchTool(t => t.name === e.data.tool && t.output === undefined, () => ({ diff: e.data.diff }))
           break
+        case 'title':
+          set(st => ({
+            chats: st.chats.map(c => (c.id === cid ? { ...c, title: e.data.title } : c)),
+            history: st.history.map(h => (h.id === st.chats.find(c => c.id === cid)?.sessionId ? { ...h, title: e.data.title } : h)),
+          }))
+          break
         case 'usage':
           patchMessage(cid, botId, () => ({ usage: e.data }))
           set(st => ({ chats: st.chats.map(c => c.id === cid ? { ...c, contextReport: e.data.context_report, lastUsage: e.data } : c) }))

@@ -90,6 +90,11 @@ COMPACT_PROMPT = (
     "most 300 words. Do not address the user and do not add anything that is not in the text."
 )
 
+TITLE_PROMPT = (
+    "Write a title of at most six words for a conversation that starts with the user's message "
+    "below. Name the task, not the user. No quotes, no final period, no emoji. Reply with the title only."
+)
+
 def project_instructions(cwd: Path) -> tuple[str, str] | None:
     """(file name, text) of the project's instruction file in `cwd`, if there is one."""
     for name in INSTRUCTION_FILES:

@@ -235,6 +235,14 @@ before it reads a site for the first time. Search works without a key through Du
 which sometimes asks automated clients for a human check; Vesper does not try to get around
 that. For reliable search put a `BRAVE_API_KEY` or `TAVILY_API_KEY` in `~/.vesper/.env`.
 
+### A small model for the side work
+
+Chat titles and summaries of long conversations don't need your best model. Point them at
+a cheaper or local one with `/small ollama llama3.2` in the terminal, or Settings, Models,
+Small model in the app; `/small off` goes back to the main model. The first message of a new
+chat then gets a short title such as "Fix login redirect". If the small model fails, the
+main model writes the summary and the chat keeps its first words as the title.
+
 ### Token use
 
 Vesper is built to spend few tokens per step:
@@ -492,7 +500,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.15.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.16.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

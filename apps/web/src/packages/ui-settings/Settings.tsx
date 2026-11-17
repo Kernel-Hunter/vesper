@@ -228,7 +228,11 @@ function ModelsTab() {
   const server = useStore(s => s.server)
   const focus = useStore(s => s.settings.focusProvider)
   const [url, setUrl] = useState(server?.custom_base_url ?? '')
+  const [smallProvider, setSmallProvider] = useState(server?.settings.small_provider ?? '')
+  const [smallModel, setSmallModel] = useState(server?.settings.small_model ?? '')
   if (!server) return null
+  const smallChanged = smallProvider !== server.settings.small_provider || smallModel.trim() !== server.settings.small_model
+  const usable = server.providers.filter(p => p.local || p.has_key || p.id === smallProvider)
   const cloud = server.providers.filter(p => p.needs_key)
   const local = server.providers.filter(p => p.local)
   return (
@@ -242,6 +246,21 @@ function ModelsTab() {
         <form className="key-input" onSubmit={e => { e.preventDefault(); void saveSettings({ custom_base_url: url.trim() }, 'Custom server saved') }}>
           <input className="input" value={url} onChange={e => setUrl(e.target.value)} placeholder="http://localhost:8000/v1" aria-label="Custom base URL" spellCheck={false} />
           <button type="submit" className="btn primary" disabled={url.trim() === server.custom_base_url}>Save</button>
+        </form>
+      </Section>
+      <Section title="Small model" desc="A cheaper, faster model for chat titles and for summaries of long conversations. Leave it off and the main model does both.">
+        <form className="key-input" onSubmit={e => {
+          e.preventDefault()
+          const model = smallProvider ? smallModel.trim() : ''
+          void saveSettings({ small_provider: model ? smallProvider : '', small_model: model }, model ? 'Small model saved' : 'Small model off')
+        }}>
+          <select className="input" value={smallProvider} onChange={e => setSmallProvider(e.target.value)} aria-label="Small model provider">
+            <option value="">Off</option>
+            {usable.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+          <input className="input" value={smallModel} onChange={e => setSmallModel(e.target.value)} disabled={!smallProvider}
+            placeholder="Model id, for example llama3.2" aria-label="Small model id" spellCheck={false} />
+          <button type="submit" className="btn primary" disabled={!smallChanged || (!!smallProvider && !smallModel.trim())}>Save</button>
         </form>
       </Section>
     </>

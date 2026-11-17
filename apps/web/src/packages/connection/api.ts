@@ -18,6 +18,8 @@ export interface Settings {
   workspace: string
   agent_mode: AgentMode
   thinking: Thinking
+  small_provider: string
+  small_model: string
 }
 
 export type AgentMode = 'ask' | 'auto-edit' | 'yolo' | 'plan'
@@ -172,6 +174,7 @@ export type StreamEvent =
   | { event: 'stopped'; data: Record<string, never> }
   | { event: 'steer'; data: { id: string; texts: string[] } }
   | { event: 'unsteered'; data: { texts: string[] } }
+  | { event: 'title'; data: { title: string } }
   | { event: 'done'; data: Record<string, never> }
 
 /** Token from the URL hash (#token=...), kept for the session and removed from the address bar. */

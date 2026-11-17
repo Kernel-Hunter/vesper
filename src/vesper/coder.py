@@ -41,7 +41,7 @@ from langchain_core.messages import (
 )
 
 from vesper.attachments import human_content, without_images
-from vesper.prompts import COMPACT_PROMPT, agent_system_prompt
+from vesper.prompts import COMPACT_PROMPT, TITLE_PROMPT, agent_system_prompt
 from vesper.store import Store, new_id
 from vesper.workspace import Workspace
 
@@ -451,6 +451,7 @@ class Session:
         self._saved = False                     # a row exists in the store
         self.tokens = {"input": 0, "output": 0, "cached": 0, "context": 0}
         self._llm = llm
+        self.small_llm = None                       # cheaper model for summaries and titles (None: use the main one)
         self._agent = None
         self._agent_key = None
         self._pending: list[tuple[str, dict]] = []  # events raised by tools while the agent runs
@@ -697,12 +698,19 @@ class Session:
         older = self.history[:cut]
         if not older or (len(older) == 2 and text_of(older[0].content).startswith(SUMMARY_OPEN)):
             return False
-        try:
-            reply = None  # streamed: some providers refuse a long non-streaming request
-            for piece in self._llm.stream([SystemMessage(COMPACT_PROMPT), HumanMessage(_render(older))]):
-                reply = piece if reply is None else reply + piece
-        except Exception as exc:  # noqa: BLE001 - the caller falls back to trimming
-            self._log("error", detail={"error": f"compact: {type(exc).__name__}: {exc}"[:2000]})
+        prompt = [SystemMessage(COMPACT_PROMPT), HumanMessage(_render(older))]
+        reply = None
+        for llm in [m for m in (self.small_llm, self._llm) if m is not None]:
+            try:
+                reply = None  # streamed: some providers refuse a long non-streaming request
+                for piece in llm.stream(prompt):
+                    reply = piece if reply is None else reply + piece
+                if reply is not None and split_thinking(text_of(reply.content))[1].strip():
+                    break
+            except Exception as exc:  # noqa: BLE001 - try the main model, then the caller trims
+                self._log("error", detail={"error": f"compact: {type(exc).__name__}: {exc}"[:2000]})
+                reply = None
+        if reply is None:
             return False
         summary = split_thinking(text_of(reply.content))[1].strip() if reply is not None else ""
         if not summary:
@@ -860,6 +868,21 @@ class Session:
             self.title = " ".join(first_text.split())[:80]
             self.store.update_session(self.id, title=self.title)
 
+    def name_with_small_model(self, first_text: str) -> str:
+        """Ask the small model for a short title of a new conversation. Returns it ("" when none)."""
+        if self.small_llm is None or self.store is None or not self._saved:
+            return ""
+        try:
+            reply = self.small_llm.invoke([SystemMessage(TITLE_PROMPT), HumanMessage(first_text[:2000])])
+        except Exception as exc:  # noqa: BLE001 - the first words of the message stay the title
+            self._log("error", detail={"error": f"title: {type(exc).__name__}: {exc}"[:2000]})
+            return ""
+        title = " ".join(split_thinking(text_of(reply.content))[1].split()).strip(" \"'.`*#")[:80]
+        if not title or len(title.split()) > 12:
+            return ""
+        self.rename(title)
+        return title
+
     def rename(self, title: str) -> None:
         self.title = " ".join(title.split())[:80]
         if self.store is not None and self._saved:
@@ -942,6 +965,7 @@ class Session:
         self.workspace.stopped = False
         self._edited, self._check_rounds = False, 0
         self.workspace._seen.clear()
+        new_chat = not self._saved
         self._ensure_saved(shown or text)
         self._log("prompt", detail={"text": shown or text})
         started = time.monotonic()
@@ -1078,6 +1102,8 @@ class Session:
         yield "usage", usage
         if unused:  # sent too late for this turn: the front end sends them as new messages
             yield "unsteered", {"texts": unused}
+        if new_chat and (title := self.name_with_small_model(shown or text)):
+            yield "title", {"title": title}
         yield "done", {}
 
     def _drain(self):

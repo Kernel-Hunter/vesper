@@ -286,6 +286,13 @@ OPTIONAL_SETTINGS = {
 }
 
 
+def get_small_llm(provider: str | None, model: str | None):
+    """The cheaper model for summaries and titles, or None when none is set (the main model does it)."""
+    if fake_llm_enabled() or not provider or provider not in PROVIDERS or not (model or "").strip():
+        return None
+    return get_llm(provider, model.strip())
+
+
 def adapt(llm, exc: BaseException):
     """A copy of `llm` without the optional setting the provider just refused, or None.
 

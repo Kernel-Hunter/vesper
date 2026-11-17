@@ -98,6 +98,7 @@ SLASH = {
     "/undo": "put files back to how they were before Vesper's last changes",
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
+    "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
     "/mcp": "MCP servers and their tools (/mcp approve [name], /mcp restart [name])",
@@ -164,6 +165,16 @@ def make_llm(cfg: dict):
     return prov.get_llm(cfg.get("provider"), cfg.get("model") or None, thinking=cfg.get("thinking") or "off")
 
 
+def make_small_llm(cfg: dict):
+    """The cheaper model for summaries and titles (None: the main model does them)."""
+    from vesper import providers as prov
+
+    try:
+        return prov.get_small_llm(cfg.get("small_provider"), cfg.get("small_model"))
+    except Exception:  # noqa: BLE001 - a broken small model falls back to the main one
+        return None
+
+
 def context_tokens(cfg: dict) -> int:
     from vesper import providers as prov
 
@@ -224,6 +235,7 @@ class App:
             source="terminal", provider=self.cfg.get("provider", ""), model=self.cfg.get("model", ""),
             context_tokens=context_tokens(self.cfg),
         )
+        self.session.small_llm = make_small_llm(self.cfg)
 
     # ----- approvals -----
     def _approve_from_tool(self, action: dict) -> str:
@@ -622,6 +634,28 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def small(self, arg: str) -> None:
+        from vesper import providers as prov
+
+        parts = arg.split(maxsplit=1)
+        if parts and parts[0].lower() in ("off", "none", "clear"):
+            patch = {"small_provider": "", "small_model": ""}
+        elif len(parts) == 2 and parts[0].lower() in prov.PROVIDERS:
+            patch = {"small_provider": parts[0].lower(), "small_model": parts[1].strip()}
+        elif parts:
+            note(f"Use /small PROVIDER MODEL, for example /small ollama llama3.2. Providers: {', '.join(prov.PROVIDERS)}.")
+            return
+        else:
+            now = self.cfg.get("small_model") and f"{self.cfg.get('small_provider')} {self.cfg['small_model']}"
+            note(f"Small model: {now}. Turn it off with /small off." if now else
+                 "No small model: the main model writes summaries and titles. Set one with /small PROVIDER MODEL.")
+            return
+        self.cfg.update(patch)
+        save_config(patch)
+        self.session.small_llm = make_small_llm(self.cfg)
+        note(f"Summaries and chat titles now use {patch['small_provider']} {patch['small_model']}." if patch["small_model"]
+             else "Small model off: the main model writes summaries and titles.")
+
     def compact(self) -> None:
         self.wait_idle()
         before = self.session.tokens["context"]
@@ -906,6 +940,8 @@ class App:
             self.compact()
         elif cmd == "/check":
             self.check(arg)
+        elif cmd == "/small":
+            self.small(arg)
         elif cmd == "/permissions":
             self.permissions(arg)
         elif cmd == "/mcp":
