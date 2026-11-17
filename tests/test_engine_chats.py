@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -358,3 +359,16 @@ def test_undo_and_rewind_wait_for_a_stopped_answer_instead_of_failing(engine, mo
         run.result(timeout=5)
     entry = engine._folder_session("r1", [], None)
     assert not entry.get("stopping")
+
+
+def test_a_project_slash_command_sends_its_text_and_the_chat_shows_the_command(engine):
+    proj = Path(engine.settings["workspace"])
+    (proj / ".claude" / "commands").mkdir(parents=True)
+    (proj / ".claude" / "commands" / "explain.md").write_text("---\ndescription: Explain a file\n---\nExplain $ARGUMENTS simply.\n")
+    events = list(engine.stream_answer("/explain notes.md", "cmd1", []))
+    assert not any(e == "error" for e, _ in events), events
+    sent = engine.test_llm.seen[-1]
+    assert "Explain notes.md simply." in str(sent[-1].content)
+    sid = next(d for e, d in events if e == "session")["id"]
+    first = engine.saved_session(sid)["turns"][0]
+    assert first["text"] == "/explain notes.md"  # what the user typed, not the template

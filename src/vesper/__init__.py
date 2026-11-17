@@ -1,3 +1,3 @@
 """Vesper: an AI coding agent for your terminal and desktop, built on LangChain and LangGraph."""
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"

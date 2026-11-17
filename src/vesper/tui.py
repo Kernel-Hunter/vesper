@@ -438,6 +438,11 @@ class App:
                     for cmd, desc in SLASH.items():
                         if cmd.startswith(text):
                             yield Completion(cmd, start_position=-len(text), display_meta=desc)
+                    from vesper.commands import find_commands
+
+                    for name, c in find_commands(app.workspace.root).items():
+                        if "/" + name not in SLASH and ("/" + name).startswith(text):
+                            yield Completion("/" + name, start_position=-len(text), display_meta=c["description"])
                     return
                 moving = re.match(r"^(/cd|!cd)\s+(\S*)$", text)
                 if moving:
@@ -827,6 +832,14 @@ class App:
             t.add_column(style=MUTED)
             for c, d in SLASH.items():
                 t.add_row(c, d)
+            from vesper.commands import find_commands
+
+            custom = find_commands(self.workspace.root)
+            if custom:
+                t.add_row("", "")
+                for name, c in custom.items():
+                    if "/" + name not in SLASH:
+                        t.add_row(f"/{name}" + (f" {c['hint']}" if c["hint"] else ""), f"{c['description']} ({c['scope']})")
             t.add_row("", "")
             for k, d in SHORTCUTS:
                 t.add_row(k, d)
@@ -883,7 +896,16 @@ class App:
         elif cmd == "/app":
             open_app()
         else:
-            note(f"Unknown command {cmd}. Type /help.", WARN)
+            from vesper.commands import expand
+
+            prompt = expand(self.workspace.root, line.strip(), set(SLASH))
+            if prompt is None:
+                note(f"Unknown command {cmd}. Type /help.", WARN)
+                return True
+            console.print()
+            message, images = self.expand_mentions(prompt)
+            self.run_turn(message, shown=line.strip(), images=images)
+            console.print()
         return True
 
     def _reload_llm(self) -> None:

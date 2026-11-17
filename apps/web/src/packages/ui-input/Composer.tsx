@@ -6,7 +6,7 @@ import {
 import { Icon, type IconName } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
 import { effortLabel, effortSupport } from '../ui-model-selection/effort'
-import type { Thinking } from '../connection/api'
+import { api, type Thinking } from '../connection/api'
 import { useDictation } from './useDictation'
 import { formatBytes } from './dictationProgress'
 
@@ -68,8 +68,18 @@ export function Composer() {
   const mode = settings?.agent_mode ?? 'ask'
   const effort = effortSupport(settings?.provider ?? '', model)
 
-  // Slash commands: suggestions while the message is a single /word.
-  const slash = /^\/\S*$/.test(text) ? COMMANDS.filter(c => c.name.startsWith(text.toLowerCase())) : []
+  // Slash commands: suggestions while the message is a single /word, the project's own commands included.
+  const [custom, setCustom] = useState<{ name: string; hint: string }[]>([])
+  const workspace = settings?.workspace
+  useEffect(() => {
+    let live = true
+    api.commands().then(r => {
+      if (live) setCustom(r.commands.filter(c => !COMMANDS.some(b => b.name === `/${c.name}`))
+        .map(c => ({ name: `/${c.name}`, hint: `${c.hint ? `${c.hint} · ` : ''}${c.description}` })))
+    }, () => undefined)
+    return () => { live = false }
+  }, [workspace])
+  const slash = /^\/\S*$/.test(text) ? [...COMMANDS, ...custom].filter(c => c.name.toLowerCase().startsWith(text.toLowerCase())) : []
 
   // Autosize up to 40% of the viewport.
   useLayoutEffect(() => {

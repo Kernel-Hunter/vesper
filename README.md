@@ -162,6 +162,28 @@ library. Old Word `.doc` files are converted with macOS's `textutil`. Old `.xls`
 files and Apple iWork files need to be saved in a newer format first; Vesper says so
 instead of guessing. Long documents are read a page at a time, like long code files.
 
+### Your own commands and skills
+
+A Markdown file in `.vesper/commands/` (or `.claude/commands/`, so existing projects work
+as they are) becomes a slash command named after the file. `$ARGUMENTS` is what you type
+after it, `$1` and `$2` single words. `~/.vesper/commands/` holds commands for every project.
+
+```markdown
+---
+description: Review a file for bugs
+argument-hint: <file>
+---
+Review $ARGUMENTS for bugs. Explain each one and suggest a fix.
+```
+
+`/review src/app.py` then sends that text, and the chat shows `/review src/app.py`. Both
+apps suggest your commands when you type `/`.
+
+A skill is a folder with a `SKILL.md` whose front matter has a `name` and a `description`,
+in `.vesper/skills/`, `.claude/skills/` or `.agents/skills/` of a project, or in
+`~/.vesper/skills/` and `~/.agents/skills/`. The model sees only each skill's name and
+description, and reads the file when a task calls for it, so many skills cost few tokens.
+
 ### MCP servers
 
 Vesper uses tools from [MCP](https://modelcontextprotocol.io) servers: GitHub, databases,
@@ -432,7 +454,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.9.3` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.10.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

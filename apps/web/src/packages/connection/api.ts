@@ -261,6 +261,9 @@ export const api = {
   /** Replaces the older turns of a chat with a summary. */
   compact: async (chatId: string, sessionId?: string): Promise<{ compacted: boolean; before: number; context: number; context_report?: ContextReport }> =>
     (await request(`/api/chats/${encodeURIComponent(chatId)}/compact`, { method: 'POST', json: { session_id: sessionId } })).json(),
+  /** The project's and the user's own slash commands, and the skills the agent can use. */
+  commands: async (): Promise<{ commands: { name: string; description: string; hint: string; scope: string }[]; skills: { name: string; description: string; scope: string }[] }> =>
+    (await request('/api/commands')).json(),
   mcp: async (): Promise<McpState> => (await request('/api/mcp')).json(),
   mcpAction: async (action: 'approve' | 'restart' | 'config', body: { name?: string; text?: string } = {}): Promise<McpState> =>
     (await request(`/api/mcp/${action}`, { method: 'POST', json: body })).json(),

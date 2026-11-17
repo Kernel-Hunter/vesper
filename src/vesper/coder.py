@@ -139,8 +139,14 @@ def split_thinking(text: str) -> tuple[str, str]:
             "".join(t for k, t in parts if k == "token").strip())
 
 
+SHOWN_KEY = "vesper_typed"  # on a message sent by a custom command: the "/name args" the user typed
+
+
 def user_text(m: BaseMessage) -> str:
     """What the user typed in a message, without the files and notes Vesper added to it."""
+    typed = (getattr(m, "additional_kwargs", None) or {}).get(SHOWN_KEY)
+    if isinstance(typed, str) and typed:
+        return typed
     return re.split(r"\n\n<(?:file path=|folder path=|note>)|\n\[image ", text_of(m.content))[0].strip()
 
 
@@ -776,7 +782,9 @@ class Session:
             yield "notice", {"text": "The conversation is long, so the model now sees a shortened copy: older tool output "
                                      "and turns are trimmed. The full conversation stays saved."}
         # The id carries the turn, so rewinding to this message knows which file copies came after it.
-        messages = [*history, HumanMessage(human_content(text, images or []), id=f"{TURN_ID_PREFIX}{self._turn_id}")]
+        typed = {SHOWN_KEY: shown} if shown and shown.startswith("/") and shown != text else {}  # a custom command
+        messages = [*history, HumanMessage(human_content(text, images or []), id=f"{TURN_ID_PREFIX}{self._turn_id}",
+                                           additional_kwargs=typed)]
         # What is saved: the whole conversation (not the copy trimmed to fit the model) plus this turn.
         before, sent = list(self.history), len(history)
 
@@ -784,7 +792,8 @@ class Session:
             turn = list(msgs[sent:])
             if partial.strip():  # an answer cut off while it was being written
                 turn.append(AIMessage(content=partial + ("\n\n[cut off by an error]" if failed else "\n\n[stopped]")))
-            self.history = [HumanMessage(without_images(m.content), id=m.id) if isinstance(m, HumanMessage) else m
+            self.history = [HumanMessage(without_images(m.content), id=m.id, additional_kwargs=m.additional_kwargs)
+                            if isinstance(m, HumanMessage) else m
                             for m in repair_history(before + turn)]
             self._save()
 

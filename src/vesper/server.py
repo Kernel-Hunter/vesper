@@ -476,7 +476,11 @@ class Engine:
         if retry:
             session.drop_last_turn()
         try:
-            text, image_blocks, shown = self._attach(session.workspace, question, attachments or [], images or [])
+            from vesper.commands import expand
+
+            command = expand(session.workspace.root, question) if question.startswith("/") else None
+            text, image_blocks, shown = self._attach(session.workspace, command or question, attachments or [], images or [])
+            shown["question"] = question  # the chat shows "/name args"; the model gets the command's text
         except HTTPException as exc:
             entry["lock"].release()
             yield "error", {"message": exc.detail}
@@ -883,6 +887,14 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             text = ""
         return {"servers": mcp.status(root), "problems": mcp.problems(root), "config_path": str(path),
                 "config": text, "folder": root}
+
+    @app.get("/api/commands", dependencies=[Depends(auth)])
+    def get_commands():
+        from vesper.commands import find_commands, find_skills
+
+        root = engine.settings["workspace"] or str(Path.home())
+        return {"commands": [{k: c[k] for k in ("name", "description", "hint", "scope")} for c in find_commands(root).values()],
+                "skills": [{k: s[k] for k in ("name", "description", "scope")} for s in find_skills(root)]}
 
     @app.get("/api/mcp", dependencies=[Depends(auth)])
     def get_mcp():
