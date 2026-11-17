@@ -241,7 +241,7 @@ export const api = {
   },
   sessions: async (query = ''): Promise<SavedSession[]> =>
     ((await (await request(`/api/sessions?limit=200${query ? `&q=${encodeURIComponent(query)}` : ''}`)).json()) as { sessions: SavedSession[] }).sessions,
-  session: async (id: string): Promise<SavedSession & { turns: Turn[]; context_report?: ContextReport; last_usage?: Usage | null }> =>
+  session: async (id: string): Promise<SavedSession & { turns: Turn[]; context_report?: ContextReport; last_usage?: Usage | null; cut_off?: boolean }> =>
     (await request(`/api/sessions/${encodeURIComponent(id)}`)).json(),
   deleteSession: async (id: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })

@@ -523,11 +523,38 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
     if (BrowserWindow.getAllWindows().length === 0 && engine.info !== undefined) mainWindow = createWindow(engine.info)
   })
 
+  /** How many answers are running; 0 when the engine does not answer quickly. */
+  const runningAnswers = async (): Promise<number> => {
+    const info = engine.info
+    if (!info) return 0
+    try {
+      const res = await fetch(`${info.origin}/api/busy`, { headers: { 'X-Token': info.token }, signal: AbortSignal.timeout(1500) })
+      const data = await res.json() as { working?: unknown }
+      return typeof data.working === 'number' ? data.working : 0
+    } catch { return 0 }
+  }
+
+  let askingToQuit = false
   app.on('before-quit', (event) => {
     if (quitting) return
     event.preventDefault()
-    quitting = true
-    void engine.stop().finally(() => app.quit())
+    if (askingToQuit) return
+    askingToQuit = true
+    void (async () => {
+      const working = SMOKE ? 0 : await runningAnswers()
+      if (working > 0) {
+        const owner = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined
+        const options = {
+          type: 'warning' as const, buttons: ['Keep working', 'Quit anyway'], defaultId: 0, cancelId: 0,
+          message: working === 1 ? 'Vesper is still working on an answer.' : `Vesper is still working on ${working} answers.`,
+          detail: 'If you quit now, everything done so far is saved, and the conversation offers a Continue button when you open Vesper again.',
+        }
+        const { response } = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options)
+        if (response !== 1) { askingToQuit = false; return }
+      }
+      quitting = true
+      void engine.stop().finally(() => app.quit())
+    })()
   })
 
   void app.whenReady().then(() => {

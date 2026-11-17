@@ -416,6 +416,10 @@ def recap(session, row: dict) -> None:
         body = text_of(msg.content).split("\n\n<file path=")[0].strip().splitlines()
         shown = " ".join(body[:4])[:300] + (" …" if len(body) > 4 or len(" ".join(body[:4])) > 300 else "")
         console.print(Text.assemble((f"  {who:>6}  ", MUTED), (shown, MUTED)))
+    store = getattr(session, "store", None)
+    if store is not None and session.history and store.cut_off(session.id):
+        console.print(Text.assemble(("  ! ", WARN), ("The last answer was cut off when Vesper closed. Type ", MUTED),
+                                    ("continue", "bold"), (" to pick up where it stopped.", MUTED)))
 
 
 def tool_detail(name: str, args: dict) -> Text | Syntax | None:

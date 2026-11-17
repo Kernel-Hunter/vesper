@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  attachFiles, closeSettings, currentBusy, currentDraft, getState, newChat, openSession, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
+  attachFiles, closeSettings, currentBusy, currentDraft, resumeLast, getState, newChat, openSession, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
 } from './packages/store/store'
 import { Effects } from './packages/ui-effects/Effects'
 import { Composer } from './packages/ui-input/Composer'
@@ -47,6 +47,7 @@ export function App() {
     if (sessionId) window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
     void refresh().then(() => {
       if (sessionId && /^[0-9a-f]{4,32}$/.test(sessionId) && !getState().currentId && !currentDraft(getState())) void openSession(sessionId)
+      else if (!sessionId) void resumeLast() // the conversation that was open when Vesper closed
     })
     if (window.innerWidth < 820 && getState().sidebar) toggleSidebar()
   }, [])

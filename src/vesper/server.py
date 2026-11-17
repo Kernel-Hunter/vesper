@@ -621,6 +621,8 @@ class Engine:
             entries = list({id(e): e for e in self._sessions.values()}.values())
         for entry in entries:
             stop = entry.get("stop")
+            if stop is not None and entry["lock"].locked():
+                entry["session"]._log("interrupt", "quit")  # shown as "cut off" with a Continue button next time
             if stop is not None:
                 stop()
         deadline = time.monotonic() + timeout
@@ -748,7 +750,15 @@ class Engine:
         s = self.settings
         workspace = Workspace(Path(row["cwd"]), mode=s["agent_mode"])
         report = context_report(messages, workspace, s["provider"], s["model"])
-        return {**row, "turns": transcript(messages), "context_report": report, "last_usage": db.last_usage(row["id"])}
+        with self._sessions_lock:
+            running = any(e["session"].id == row["id"] and e["lock"].locked() for e in self._sessions.values())
+        return {**row, "turns": transcript(messages), "context_report": report, "last_usage": db.last_usage(row["id"]),
+                "cut_off": not running and bool(messages) and db.cut_off(row["id"])}
+
+    def busy_count(self) -> int:
+        """How many answers are running right now (the desktop app asks before quitting)."""
+        with self._sessions_lock:
+            return len({id(e) for e in self._sessions.values() if e["lock"].locked()})
 
     def delete_saved_session(self, session_id: str) -> None:
         db = self.history_db()
@@ -1038,6 +1048,10 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(400, "Send kind (commands or hosts) and the rule to remove.")
         permissions.remove_rule(rule, "allow_commands" if kind == "commands" else "allow_hosts")
         return get_permissions()
+
+    @app.get("/api/busy", dependencies=[Depends(auth)])
+    def busy():
+        return {"working": engine.busy_count()}
 
     @app.get("/api/sessions", dependencies=[Depends(auth)])
     def sessions(limit: int = 100, q: str = ""):

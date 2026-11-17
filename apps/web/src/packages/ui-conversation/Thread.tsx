@@ -49,12 +49,18 @@ function Empty() {
   )
 }
 
+const CONTINUE = 'Vesper was closed before your last answer finished. Check what was already done, then continue the task from there.'
+const WINDOW = 60 // messages drawn at first; scrolling up adds this many more
+
 export function Thread() {
   const chat = useStore(currentChat)
   const streaming = useStore(currentBusy)
   const ref = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [showJump, setShowJump] = useState(false)
+  // Long conversations draw only their latest messages; earlier ones load on demand.
+  const [shown, setShown] = useState(WINDOW)
+  const anchor = useRef<number | null>(null) // scroll height before loading earlier messages
 
   const onScroll = (): void => {
     const el = ref.current
@@ -62,10 +68,24 @@ export function Thread() {
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80
     stick.current = near
     setShowJump(!near)
+    if (el.scrollTop < 200 && chat && chat.messages.length > shown && anchor.current === null) showEarlier()
   }
+
+  const showEarlier = (): void => {
+    anchor.current = ref.current?.scrollHeight ?? null
+    setShown(n => n + WINDOW)
+  }
+
+  // Keep the reader's place when earlier messages appear above.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el && anchor.current !== null) el.scrollTop += el.scrollHeight - anchor.current
+    anchor.current = null
+  }, [shown])
 
   // New chat: jump to bottom.
   useLayoutEffect(() => {
+    setShown(WINDOW)
     stick.current = true
     const el = ref.current
     if (el) el.scrollTop = el.scrollHeight
@@ -91,9 +111,20 @@ export function Thread() {
   return (
     <div className="thread" ref={ref} onScroll={onScroll}>
       <div className="col" role="log" aria-live="polite" aria-busy={!!streaming}>
-        {chat.messages.map((m, i) => (
-          <Message key={m.id} msg={m} chatId={chat.id} last={i === chat.messages.length - 1} />
+        {chat.messages.length > shown && (
+          <button type="button" className="earlier" onClick={showEarlier}>
+            Show earlier messages ({chat.messages.length - shown})
+          </button>
+        )}
+        {chat.messages.slice(-shown).map((m, i, list) => (
+          <Message key={m.id} msg={m} chatId={chat.id} last={i === list.length - 1} />
         ))}
+        {chat.cutOff && !streaming && (
+          <div className="cut-off" role="status">
+            <span>Vesper closed before this answer finished. Everything up to that point is saved.</span>
+            <button type="button" className="btn primary" onClick={() => void send(CONTINUE, { chatId: chat.id })}>Continue</button>
+          </div>
+        )}
       </div>
       {showJump && (
         <button type="button" className="jump" onClick={jump} aria-label="Scroll to latest">

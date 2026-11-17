@@ -341,6 +341,13 @@ You can keep typing while it works. A message sent during an answer joins it bef
 agent's next step, so "also update the tests" or "use the other folder" changes the work in
 progress without stopping it. If the answer ends first, the message is sent as the next one.
 
+Close the app whenever you like. It opens again on the conversation you had open, with any
+message you had started typing still in the box. If you quit while Vesper is answering, it
+asks first; what it did so far is saved either way, and the conversation shows a Continue
+button that picks the work up from where it stopped (in the terminal, `vesper -c` says the
+same and you type `continue`). Long conversations stay fast: only the latest 60 messages are
+drawn until you scroll up, and each step saves only what changed.
+
 The Review button in the top bar (`Shift+Cmd+D` or `Ctrl+Shift+D`) lists every file the
 conversation changed, each compared with what it held before the conversation first touched
 it. Click a file for its diff with line numbers. Hover a line and click `+` to write a
@@ -503,7 +510,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.17.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.18.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

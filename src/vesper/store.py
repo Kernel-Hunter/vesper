@@ -90,6 +90,8 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._saved: dict[str, list] = {}       # session id -> [(message, json)] last written by this process
+        self._saved_at: dict[str, float] = {}   # session id -> updated_at this process wrote
         self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         with self._lock, self._db:
@@ -200,13 +202,36 @@ class Store:
 
     # ---------------------------------------------------------------- messages
     def save_messages(self, session_id: str, messages: list[BaseMessage]) -> None:
-        """Replace the stored conversation with `messages`."""
-        rows = [(session_id, i, m.type, json.dumps(d, ensure_ascii=False))
-                for i, (m, d) in enumerate(zip(messages, messages_to_dict(messages), strict=True))]
+        """Make the stored conversation equal to `messages`.
+
+        Saving happens after every step, so only the part that changed is written: messages
+        already saved (the same objects as last time) are not converted again, and rows are
+        rewritten from the first one that differs. A long session stays as fast as a short one.
+        """
+        cache = self._saved.get(session_id, [])
+        data: list[str] = []
+        for i, m in enumerate(messages):
+            if i < len(cache) and cache[i][0] is m:
+                data.append(cache[i][1])
+            else:
+                data.append(json.dumps(messages_to_dict([m])[0], ensure_ascii=False))
+        start = 0
+        while start < min(len(cache), len(data)) and cache[start][1] == data[start]:
+            start += 1
+        rows = [(session_id, i, messages[i].type, data[i]) for i in range(start, len(messages))]
+        now = time.time()
         with self._lock, self._db:
-            self._db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            row = self._db.execute("SELECT updated_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if session_id not in self._saved or row is None or row["updated_at"] != self._saved_at.get(session_id):
+                # First save in this process, or another process (the terminal or the app) wrote
+                # this session since: the stored rows are unknown, so rewrite them all.
+                start = 0
+                rows = [(session_id, i, m.type, d) for i, (m, d) in enumerate(zip(messages, data, strict=True))]
+            self._db.execute("DELETE FROM messages WHERE session_id = ? AND seq >= ?", (session_id, start))
             self._db.executemany("INSERT INTO messages (session_id, seq, role, data) VALUES (?, ?, ?, ?)", rows)
-            self._db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (time.time(), session_id))
+            self._db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        self._saved[session_id] = list(zip(messages, data, strict=True))
+        self._saved_at[session_id] = now
 
     def load_messages(self, session_id: str) -> list[BaseMessage]:
         with self._lock:
@@ -284,6 +309,23 @@ class Store:
             return detail if isinstance(detail, dict) else None
         except (TypeError, ValueError):
             return None
+
+    def cut_off(self, session_id: str) -> bool:
+        """Whether the last answer never finished: the app or terminal closed (or crashed) while
+        it was running. A turn the user stopped on purpose ends normally and does not count."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT kind, name FROM events WHERE session_id = ? AND kind IN ('prompt', 'usage', 'interrupt') "
+                "ORDER BY id DESC LIMIT 3", (session_id,),
+            ).fetchall()
+        for row in rows:
+            if row["kind"] == "interrupt" and row["name"] == "quit":
+                return True
+            if row["kind"] == "prompt":
+                return row is rows[0]  # a question with nothing logged after it
+            if row["kind"] == "usage":
+                continue
+        return False
 
     def events(self, session_id: str, limit: int = 200) -> list[dict]:
         """The last `limit` events of a session, oldest first."""

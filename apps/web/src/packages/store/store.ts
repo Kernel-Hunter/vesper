@@ -68,6 +68,8 @@ export interface Chat {
   syncedAt?: number
   contextReport?: ContextReport
   lastUsage?: Usage
+  /** The last answer never finished: Vesper closed or crashed while it ran. */
+  cutOff?: boolean
 }
 
 /** Something to send with the next message: a file or folder by path, or a pasted image. */
@@ -113,12 +115,30 @@ export interface State {
   attachments: Record<string, Attachment[]>
 }
 
+/* What survives closing the app: the open conversation and every unsent draft. */
+const RESUME_KEY = 'vesper.resume'
+interface Resume { session?: string; drafts?: Record<string, string> }
+const readResume = (): Resume => {
+  try { const v: unknown = JSON.parse(localStorage.getItem(RESUME_KEY) || '{}'); return v && typeof v === 'object' ? v as Resume : {} } catch { return {} }
+}
+let resume = readResume()
+let resumeTimer: ReturnType<typeof setTimeout> | undefined
+const saveResume = (patch: Resume): void => {
+  resume = { ...resume, ...patch }
+  clearTimeout(resumeTimer)
+  resumeTimer = setTimeout(() => { try { localStorage.setItem(RESUME_KEY, JSON.stringify(resume)) } catch { /* private mode */ } }, 250)
+}
+/** The conversation that was open when the app last closed (if any). */
+export const lastSession = (): string => (typeof resume.session === 'string' ? resume.session : '')
+
+const firstDraftId = uid()
+
 let state: State = {
   server: null,
   connected: true,
   chats: [],
   currentId: null,
-  newDraftId: uid(),
+  newDraftId: firstDraftId,
   streamingIds: [],
   appearance: loadAppearance(),
   settings: { open: false, tab: 'models', focusProvider: null },
@@ -127,7 +147,7 @@ let state: State = {
   history: [],
   historyLoaded: false,
   transcript: (() => { try { return localStorage.getItem('vesper.transcript') === '1' } catch { return false } })(),
-  drafts: {},
+  drafts: typeof resume.drafts?.new === 'string' ? { [firstDraftId]: resume.drafts.new } : {},
   queued: {},
   attachments: {},
 }
@@ -239,12 +259,29 @@ export function setDraft(value: string | ((old: string) => string), target = dra
     const key = target
     return { drafts: { ...s.drafts, [key]: typeof value === 'function' ? value(s.drafts[key] ?? '') : value } }
   })
+  // Kept by conversation (its saved id), so the text is still there after a restart.
+  const chat = state.chats.find(c => c.id === target)
+  const where = target === state.newDraftId ? 'new' : chat?.sessionId ?? (chat ? '' : target)
+  if (where) {
+    const drafts = { ...(resume.drafts ?? {}) }
+    const text = state.drafts[target] ?? ''
+    if (text) drafts[where] = text.slice(0, 50_000)
+    else delete drafts[where]
+    const keys = Object.keys(drafts)
+    for (const k of keys.slice(0, Math.max(0, keys.length - 50))) delete drafts[k] // keep the 50 latest
+    saveResume({ drafts })
+  }
+}
+
+function rememberOpen(): void {
+  saveResume({ session: currentChat(state)?.sessionId ?? '' })
 }
 
 let selection = 0
 export function selectChat(id: string): void {
   selection++
   set({ currentId: id })
+  rememberOpen()
   const sid = state.chats.find(c => c.id === id)?.sessionId
   if (sid && state.history.find(h => h.id === sid)?.unread) void updateSidebar(sid, { unread: false })
 }
@@ -252,6 +289,17 @@ export function selectChat(id: string): void {
 export function newChat(): void {
   selection++
   set({ currentId: null, newDraftId: uid() })
+  saveResume({ session: '' })
+}
+
+/** After a restart: open the conversation that was open when Vesper closed, quietly. */
+export async function resumeLast(): Promise<void> {
+  const id = lastSession()
+  if (!/^[0-9a-f]{4,32}$/.test(id)) return
+  for (let i = 0; i < 40 && !state.server; i++) await new Promise(r => setTimeout(r, 500)) // the engine is starting
+  if (state.currentId || currentDraft(state)) return // the user already started something else
+  try { await api.session(id) } catch { saveResume({ session: '' }); return } // deleted since
+  await openSession(id)
 }
 
 /** Opens a conversation from the session database (or the copy already open). */
@@ -259,16 +307,19 @@ export async function openSession(id: string): Promise<void> {
   const request = ++selection
   if (state.history.find(h => h.id === id)?.unread) void updateSidebar(id, { unread: false })
   const open = state.chats.find(c => c.sessionId === id)
-  if (open) { set({ currentId: open.id }); return }
+  if (open) { set({ currentId: open.id }); rememberOpen(); return }
   try {
     const saved = await api.session(id)
     if (request !== selection) return
     const chat: Chat = {
       id: saved.id, title: saved.title || 'Untitled', updated: saved.updated_at * 1000,
       messages: turnsToMessages(saved.turns), sessionId: saved.id, cwd: saved.cwd, syncedAt: saved.updated_at,
-      contextReport: saved.context_report, lastUsage: saved.last_usage ?? undefined,
+      contextReport: saved.context_report, lastUsage: saved.last_usage ?? undefined, cutOff: !!saved.cut_off,
     }
-    set(s => ({ chats: [chat, ...s.chats.filter(c => c.id !== chat.id)], currentId: chat.id }))
+    const draft = resume.drafts?.[saved.id]
+    set(s => ({ chats: [chat, ...s.chats.filter(c => c.id !== chat.id)], currentId: chat.id,
+      drafts: draft && !s.drafts[chat.id] ? { ...s.drafts, [chat.id]: draft } : s.drafts }))
+    rememberOpen()
   } catch (e) {
     toast(errorText(e), 'error')
     void loadHistory()
@@ -419,7 +470,7 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
   set(st => ({
     streamingIds: [...st.streamingIds, cid],
     attachments: opts.retry ? st.attachments : { ...st.attachments, [attachmentKey]: [] },
-    chats: st.chats.map(c => (c.id === cid ? { ...c, updated: Date.now(), messages: [...c.messages, user, bot] } : c))
+    chats: st.chats.map(c => (c.id === cid ? { ...c, updated: Date.now(), cutOff: false, messages: [...c.messages, user, bot] } : c))
       .sort((a, b) => b.updated - a.updated),
   }))
 
@@ -460,7 +511,8 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
       if (e.event !== 'reasoning' && e.event !== 'output') thinking = false
       switch (e.event) {
         case 'session':
-          set(st => ({ chats: st.chats.map(c => (c.id === cid ? { ...c, sessionId: e.data.id, cwd: e.data.cwd } : c)) }))
+          set(st => ({ chats: st.chats.map(c => (c.id === cid ? { ...c, sessionId: e.data.id, cwd: e.data.cwd, cutOff: false } : c)) }))
+          if (cid === state.currentId) rememberOpen()
           break
         case 'turn':
           patchMessage(cid, user.id, () => ({ turnId: e.data.id }))
