@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  attachFiles, closeSettings, currentBusy, currentDraft, getState, newChat, openSession, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
+  attachFiles, closeSettings, currentBusy, currentChat, currentDraft, getState, newChat, openSession, openSettings, refresh, stop, toggleSidebar, toggleTranscript, useStore,
 } from './packages/store/store'
 import { Effects } from './packages/ui-effects/Effects'
 import { Composer } from './packages/ui-input/Composer'
 import { Sidebar } from './packages/ui-layout/Sidebar'
 import { Topbar } from './packages/ui-layout/Topbar'
 import { Environment } from './packages/ui-layout/Environment'
-import { Thread } from './packages/ui-conversation/Thread'
+import { HeroSuggestions, Thread } from './packages/ui-conversation/Thread'
 import { Settings } from './packages/ui-settings/Settings'
 import { Icon } from './packages/ui-primitives/Icon'
 import { Toasts } from './packages/ui-primitives/Toasts'
@@ -22,6 +22,7 @@ import './packages/ui-theme/designs.css'
 
 export function App() {
   const sidebar = useStore(s => s.sidebar)
+  const hero = useStore(s => { const c = currentChat(s); return !c || !c.messages.length })
   const [dragging, setDragging] = useState(false)
   const [environment, setEnvironment] = useState(() => { try { return localStorage.getItem('vesper.environment') !== '0' } catch { return true } })
   const toggleEnvironment = (): void => setEnvironment(open => {
@@ -91,11 +92,12 @@ export function App() {
     <>
       <div className={`app${sidebar ? '' : ' no-side'}`} id="app">
         <Sidebar />
-        <main className="main" onClick={e => { if (window.innerWidth < 820 && sidebar && e.target === e.currentTarget) toggleSidebar() }}>
+        <main className={`main${hero ? ' hero' : ''}`} onClick={e => { if (window.innerWidth < 820 && sidebar && e.target === e.currentTarget) toggleSidebar() }}>
           <Effects />
           <Topbar environment={environment} onToggleEnvironment={toggleEnvironment} />
           <Thread />
           <Composer />
+          {hero && <HeroSuggestions />}
         </main>
         {environment && <Environment onClose={toggleEnvironment} />}
       </div>

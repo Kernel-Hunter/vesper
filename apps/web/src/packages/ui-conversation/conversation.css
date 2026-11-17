@@ -1,24 +1,30 @@
 .thread { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; scroll-padding-bottom: 24px; }
 .col { width: var(--col); margin: 0 auto; padding: 28px 0 40px; display: flex; flex-direction: column; gap: 26px; }
 
-/* empty state */
+/* empty state: a greeting over a centered message box */
 .empty {
-  min-height: 100%; width: var(--col); margin: 0 auto; padding: 40px 0 24px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center;
+  width: var(--col); margin: 0 auto; padding: 0 0 22px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 14px; text-align: center;
   animation: rise var(--t-slow) var(--ease);
 }
-.empty-logo { filter: drop-shadow(0 8px 28px var(--accent-soft)); }
-.empty h1 { margin: 6px 0 0; font-size: 28px; font-weight: 640; letter-spacing: -.02em; }
-.empty .sub { margin: 0 0 10px; color: var(--text-2); }
-.suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: 100%; max-width: 640px; margin-top: 8px; }
-.suggestion {
-  display: flex; align-items: flex-start; gap: 9px; text-align: left;
-  padding: 13px 14px; border-radius: var(--r-md);
-  background: var(--layer-1); border: 1px solid var(--line); color: var(--text-2); font-size: 13.5px; line-height: 1.4;
-  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast), transform var(--t-fast);
+.empty-logo { flex: none; filter: drop-shadow(0 6px 22px var(--accent-soft)); }
+.hero-title {
+  display: flex; align-items: center; justify-content: center; gap: 14px; margin: 0;
+  font-family: var(--display); font-size: clamp(24px, 2.6vw, 31px); text-wrap: balance; font-weight: 400; letter-spacing: -.015em; line-height: 1.2; color: var(--text);
 }
-.suggestion svg { color: var(--accent); margin-top: 2px; }
-.suggestion:hover:not(:disabled) { background: var(--layer-2); border-color: var(--line-2); color: var(--text); transform: translateY(-1px); }
+.hero-title em { font-style: normal; color: var(--accent); }
+.main.hero .thread { flex: none; margin-top: auto; overflow: visible; }
+.main.hero .composer-wrap { padding-bottom: 0; }
+.hero-after { width: var(--col); margin: 14px auto auto; padding-bottom: 48px; animation: rise var(--t-slow) var(--ease); }
+.suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.suggestion {
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid var(--line-2); color: var(--text-2); font-size: 13px;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.suggestion svg { color: var(--text-3); }
+.suggestion:hover:not(:disabled) { background: var(--layer-1); color: var(--text); }
+.suggestion:hover svg { color: var(--accent); }
 .suggestion:disabled { opacity: .5; }
 .boot {
   text-align: left; margin: 0; padding: 18px 22px; font-size: 13px; line-height: 1.7;
@@ -26,10 +32,11 @@
   white-space: pre-wrap; max-width: 100%;
 }
 .boot::after { content: '█'; animation: blink 1s steps(1) infinite; margin-left: 2px; }
-@media (max-width: 640px) { .suggestions { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .hero-title { flex-direction: column; } }
 
 /* messages */
 .msg { display: flex; gap: 14px; animation: rise var(--t-mid) var(--ease); }
+.msg.bot { padding-top: 2px; }
 .msg.user { justify-content: flex-end; }
 .user-col { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 78%; }
 .user-col .bubble { max-width: 100%; }
@@ -47,18 +54,21 @@
 .rewind-card .dim { font-size: 12.5px; }
 .sent-attachments { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .msg.user .bubble {
-  max-width: 100%; box-sizing: border-box; padding: 10px 16px; border-radius: 20px 20px 6px 20px;
-  background: var(--bubble); white-space: pre-wrap; overflow-wrap: anywhere;
+  max-width: 100%; box-sizing: border-box; padding: 10px 16px; border-radius: var(--r-lg);
+  background: var(--bubble); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .msg .prompt { display: none; }
-.avatar { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 9px; background: var(--layer-1); border: 1px solid var(--line); margin-top: 1px; }
+.avatar { display: none; width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 9px; background: var(--layer-1); border: 1px solid var(--line); margin-top: 1px; }
 .msg.bot .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .msg.bot .body:hover .actions { opacity: 1; }
 
-.thinking { padding: 5px 0; font-size: 14px; }
+.thinking { display: flex; align-items: center; gap: 9px; padding: 4px 0; font-size: 14px; color: var(--text-2); }
+.think-mark { display: grid; place-items: center; animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { transform: scale(.82); opacity: .6; } }
+@media (prefers-reduced-motion: reduce) { .think-mark { animation: none; } }
 
 /* markdown */
-.md { overflow-wrap: anywhere; line-height: 1.65; }
+.md { overflow-wrap: anywhere; line-height: 1.7; font-size: 15px; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: 0 0 12px; }
@@ -70,6 +80,22 @@
 .md a:hover { border-bottom-color: var(--accent); }
 .md code { font-size: .88em; padding: 1.5px 5px; border-radius: 5px; background: var(--layer-2); }
 .md pre { padding: 12px 14px; border-radius: var(--r-md); background: var(--layer-1); border: 1px solid var(--line); overflow-x: auto; }
+.md [data-code] { margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--code-bg, var(--layer-1)); overflow: hidden; }
+.md [data-code] pre { margin: 0; border: 0; border-radius: 0; background: transparent; padding: 12px 16px 14px; }
+.md [data-code-head] { display: flex; align-items: center; justify-content: space-between; height: 32px; padding: 0 8px 0 14px;
+  font-size: 11.5px; color: var(--text-3); border-bottom: 1px solid var(--line); font-family: var(--mono); }
+.md [data-copy] { padding: 3px 8px; border-radius: var(--r-xs); font-family: var(--font); cursor: pointer; user-select: none; }
+.md [data-copy]:hover, .md [data-copy]:focus-visible { background: var(--layer-2); color: var(--text); outline: none; }
+.md pre code { line-height: 1.6; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-doctag, .hljs-meta .hljs-keyword { color: var(--hl-keyword); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: var(--hl-string); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--hl-number); }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-selector-id { color: var(--hl-title); }
+.hljs-title.class_, .hljs-type, .hljs-class .hljs-title { color: var(--hl-type); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-property, .hljs-params, .hljs-selector-class { color: var(--hl-attr); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: var(--text-3); font-style: italic; }
+.hljs-deletion { color: var(--err); }
+.hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 700; }
 .md pre code { padding: 0; background: none; font-size: 12.5px; }
 .md blockquote { padding-left: 14px; border-left: 3px solid var(--line-2); color: var(--text-2); }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 13.5px; }

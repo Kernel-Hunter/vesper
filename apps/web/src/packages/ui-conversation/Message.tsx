@@ -6,7 +6,7 @@ import { retry, rewindTo, runPlan, toast, undoChanges, useStore } from '../store
 import { TOOL_VERBS, ToolGroup, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
-import { renderMarkdown } from './markdown'
+import { onCodeCopy, renderMarkdown } from './markdown'
 import { tokenCount as count } from '../ui-layout/context'
 const seconds = (s: number): string => (s < 60 ? `${s < 10 ? s.toFixed(1) : Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`)
 
@@ -175,7 +175,6 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
 
   return (
     <div className="msg bot">
-      <div className="avatar" aria-hidden="true"><LogoMark size={22} /></div>
       <div className="body">
         {parts.map((p, i) => (p.kind === 'group'
           ? <ToolGroup key={p.key} steps={p.indexes.map(n => msg.tools[n]!)} chatId={chatId} msgId={msg.id} expanded={transcript} />
@@ -192,12 +191,14 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
             <div
               key={p.key}
               className={`md${msg.streaming && i === lastText && i === parts.length - 1 ? ' cursor' : ''}`}
+              onClick={onCodeCopy} onKeyDown={onCodeCopy}
               dangerouslySetInnerHTML={{ __html: p.html }}
             />
           )))}
         {!!msg.tasks?.length && <TaskList items={msg.tasks} />}
         {thinking && (
           <div className="thinking">
+            <span className="think-mark" aria-hidden="true"><LogoMark size={16} blink /></span>
             <span className="shimmer">
               {msg.draft ? `Preparing ${TOOL_VERBS[msg.draft.name] ?? msg.draft.name} (${count(msg.draft.chars)} characters)`
                 : msg.tools.length ? 'Thinking' : 'Working on it'}

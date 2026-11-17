@@ -1,48 +1,61 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { currentBusy, currentChat, folderName, pickFolder, send, useStore } from '../store/store'
-import { Icon } from '../ui-primitives/Icon'
+import { Icon, type IconName } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { Message } from './Message'
 
-const SUGGESTIONS = [
-  'Explain what this project does and how it is organized',
-  'Find a bug in this code and fix it',
-  'Write tests for the most important part',
-  'Set up a new project here: ask me what it should do',
+const SUGGESTIONS: { label: string; prompt: string; icon: IconName }[] = [
+  { label: 'Explain this project', prompt: 'Explain what this project does and how it is organized', icon: 'doc' },
+  { label: 'Find and fix a bug', prompt: 'Find a bug in this code and fix it', icon: 'search' },
+  { label: 'Write tests', prompt: 'Write tests for the most important part', icon: 'check' },
+  { label: 'Start something new', prompt: 'Set up a new project here: ask me what it should do', icon: 'spark' },
 ]
+
+function greeting(): string {
+  const h = new Date().getHours()
+  return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
+}
 
 function Empty() {
   const workspace = useStore(s => s.server?.settings.workspace ?? '')
   const terminal = useStore(s => s.appearance.theme === 'terminal')
-  return (
-    <div className="empty">
-      <LogoMark size={64} className="empty-logo" blink />
-      {terminal ? (
+  if (terminal) {
+    return (
+      <div className="empty">
         <pre className="boot" aria-label="Vesper ready">{`VESPER :: coding agent
 > cwd ................ ${workspace || '~'}
 > tools .............. read, search, edit, run, web
 > type a task and press ENTER`}</pre>
-      ) : (
-        <>
-          <h1>{workspace ? `What are we building in ${folderName(workspace)}?` : 'What are we building today?'}</h1>
-          <p className="sub">
-            Vesper reads and searches your files, edits code, runs commands and looks things up on the web.
-            It asks before it changes anything. Add files, folders or screenshots with <strong>+</strong>, or drop them here.
-          </p>
-        </>
-      )}
+      </div>
+    )
+  }
+  return (
+    <div className="empty">
+      <h1 className="hero-title">
+        <LogoMark size={40} className="empty-logo" blink />
+        <span>{greeting()}{workspace ? <>. What are we building in <em>{folderName(workspace)}</em>?</> : '. What are we building?'}</span>
+      </h1>
+    </div>
+  )
+}
+
+/** Quick starts under the message box of an empty chat. */
+export function HeroSuggestions() {
+  const workspace = useStore(s => s.server?.settings.workspace ?? '')
+  return (
+    <div className="hero-after">
       <div className="suggestions">
         {SUGGESTIONS.map(q => (
-          <button type="button" key={q} className="suggestion" onClick={() => void send(q)}>
-            <Icon name="spark" size={14} />{q}
+          <button type="button" key={q.label} className="suggestion" title={q.prompt} onClick={() => void send(q.prompt)}>
+            <Icon name={q.icon} size={14} />{q.label}
           </button>
         ))}
+        {!workspace && (
+          <button type="button" className="suggestion" onClick={() => void pickFolder()}>
+            <Icon name="folder" size={14} />Open a project folder
+          </button>
+        )}
       </div>
-      {!workspace && (
-        <button type="button" className="btn ghost" onClick={() => void pickFolder()}>
-          <Icon name="folder" size={15} /> Work in a project folder
-        </button>
-      )}
     </div>
   )
 }

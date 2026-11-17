@@ -3,6 +3,8 @@
  */
 :root {
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --display: "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  --hl-keyword: #c792ea; --hl-string: #a5d6a7; --hl-number: #f6a87c; --hl-title: #82aaff; --hl-type: #ffcb6b; --hl-attr: #89ddff;
   --mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   --r-xs: 4px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px; --r-panel: 26px;
   --ease: cubic-bezier(.4, 0, .2, 1);
@@ -16,11 +18,11 @@
 /* ---------- dark (default) ---------- */
 :root, [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #212121;
-  --bg-side: #303030;
-  --layer-1: #2c2c2c;
-  --layer-2: #383838;
-  --layer-3: #454545;
+  --bg: #232322;
+  --bg-side: #1b1b1a;
+  --layer-1: #2b2b29;
+  --layer-2: #353533;
+  --layer-3: #42423f;
   --text: #f2f1ef;
   --text-2: #c2c0bd;
   --text-3: #92908d;
@@ -32,7 +34,7 @@
   --accent-soft: rgba(255, 122, 69, .14);
   --brand: #ff7a45; --brand-2: #ffc34d;
   --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
-  --bubble: #383838;
+  --bubble: #333331;
   --send-bg: #ff7a45; --send-fg: #1a0d06;
   --shadow: 0 24px 64px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
   --scrim: rgba(0, 0, 0, .55);
@@ -58,6 +60,7 @@
   --ok: #15803d; --warn: #b45309; --err: #dc2626;
   --bubble: #f3ece7;
   --send-bg: #1b1411; --send-fg: #ffffff;
+  --hl-keyword: #8e3cb8; --hl-string: #2e7d32; --hl-number: #b4531c; --hl-title: #1d5fbf; --hl-type: #9a6b00; --hl-attr: #0b7285;
   --shadow: 0 24px 64px rgba(20, 20, 40, .14), 0 2px 8px rgba(20, 20, 40, .06);
   --scrim: rgba(20, 20, 30, .28);
 }
