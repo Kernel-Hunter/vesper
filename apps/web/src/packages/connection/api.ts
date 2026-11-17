@@ -22,6 +22,24 @@ export interface Settings {
   small_model: string
 }
 
+/** One model in the automatic switching order. */
+export interface FallbackEntry {
+  provider: string
+  model: string
+  label?: string
+  /** True for a free model, false for a paid one, null when unknown (your own order). */
+  free?: boolean | null
+  why?: string
+}
+
+export interface FallbackState {
+  enabled: boolean
+  /** Your saved order, or null for the automatic one. */
+  chain: FallbackEntry[] | null
+  /** The order in use, when asked for (reading every model list takes a few seconds). */
+  order: FallbackEntry[] | null
+}
+
 export type AgentMode = 'ask' | 'auto-edit' | 'yolo' | 'plan'
 export type Thinking = 'off' | 'low' | 'medium' | 'high'
 
@@ -293,6 +311,9 @@ export const api = {
   mcp: async (): Promise<McpState> => (await request('/api/mcp')).json(),
   mcpAction: async (action: 'approve' | 'restart' | 'config', body: { name?: string; text?: string } = {}): Promise<McpState> =>
     (await request(`/api/mcp/${action}`, { method: 'POST', json: body })).json(),
+  fallback: async (withOrder = false): Promise<FallbackState> => (await request(`/api/fallback${withOrder ? '?order=1' : ''}`)).json(),
+  saveFallback: async (body: { enabled?: boolean; chain?: FallbackEntry[] | null }): Promise<FallbackState> =>
+    (await request('/api/fallback', { method: 'POST', json: body })).json(),
   permissions: async (): Promise<Permissions> => (await request('/api/permissions')).json(),
   removePermission: async (kind: 'commands' | 'hosts', rule: string): Promise<Permissions> =>
     (await request('/api/permissions/remove', { method: 'POST', json: { kind, rule } })).json(),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { api, type AgentMode, type McpState, type Permissions, type Provider, type Thinking } from '../connection/api'
+import { api, type AgentMode, type FallbackEntry, type FallbackState, type McpState, type Permissions, type Provider, type Thinking } from '../connection/api'
 import {
   canPickFolder, closeSettings, getState, openFolder, pickFolder, saveSettings, setAgentMode, setAppearance, setSettingsTab,
   useStore, type SettingsTab,
@@ -263,7 +263,67 @@ function ModelsTab() {
           <button type="submit" className="btn primary" disabled={!smallChanged || (!!smallProvider && !smallModel.trim())}>Save</button>
         </form>
       </Section>
+      <FallbackSection />
     </>
+  )
+}
+
+const WHY_LABEL: Record<string, string> = { 'your model': 'your model', paid: 'paid', free: 'free', local: 'on this computer', 'your order': '' }
+
+function FallbackSection() {
+  const [state, setState] = useState<FallbackState | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const load = (withOrder: boolean) => {
+    setLoading(withOrder)
+    api.fallback(withOrder).then(s => { setState(s); setError('') }, () => setError('Could not read the order.')).finally(() => setLoading(false))
+  }
+  useEffect(() => { load(true) }, [])
+  const save = (body: { enabled?: boolean; chain?: FallbackEntry[] | null }) => {
+    api.saveFallback(body).then(() => load(true), () => setError('Could not save the order.'))
+  }
+  const order = state?.order ?? []
+  const keep = (list: FallbackEntry[]) => list.map(e => ({ provider: e.provider, model: e.model }))
+  const move = (i: number, by: number) => {
+    const next = [...order]
+    const [item] = next.splice(i, 1)
+    if (item) next.splice(i + by, 0, item)
+    save({ chain: keep(next) })
+  }
+  return (
+    <Section title="Automatic switching" desc="When a model runs out of credits, hits a rate limit or refuses its key, Vesper moves to the next model in this order and goes on with the same step. Paid models come first, then free ones from best to weakest, then a model on this computer. A model that failed is tried again later.">
+      <label className="theme-art-toggle fallback-toggle">
+        <input type="checkbox" checked={!!state?.enabled} disabled={!state} onChange={e => save({ enabled: e.target.checked })} />
+        Switch models automatically
+      </label>
+      {error && <p className="set-desc">{error}</p>}
+      {loading && !order.length ? <p className="set-desc">Reading the models your keys can use…</p> : order.length === 0 ? (
+        <p className="set-desc">No other model found. Add an API key above, or start Ollama, to give Vesper somewhere to switch to.</p>
+      ) : (
+        <ol className="rule-list fallback-list" aria-label="Switching order">
+          {order.map((e, i) => (
+            <li key={`${e.provider}:${e.model}`} className="rule-row">
+              <span className="fallback-n">{i + 1}</span>
+              <code title={e.model}>{e.model}</code>
+              <span className="dim">{e.label ?? e.provider}{e.why && WHY_LABEL[e.why] ? ` · ${WHY_LABEL[e.why]}` : ''}</span>
+              <button type="button" className="icon-btn sm" aria-label={`Move ${e.model} up`} title="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+                <Icon name="up" size={14} />
+              </button>
+              <button type="button" className="icon-btn sm flip" aria-label={`Move ${e.model} down`} title="Move down" disabled={i === order.length - 1} onClick={() => move(i, 1)}>
+                <Icon name="up" size={14} />
+              </button>
+              <button type="button" className="icon-btn sm" aria-label={`Remove ${e.model} from the order`} title="Remove"
+                onClick={() => save({ chain: keep(order.filter((_, j) => j !== i)) })}>
+                <Icon name="trash" size={14} />
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {state?.chain && (
+        <button type="button" className="btn ghost fallback-reset" onClick={() => save({ chain: null })}>Reset to automatic order</button>
+      )}
+    </Section>
   )
 }
 

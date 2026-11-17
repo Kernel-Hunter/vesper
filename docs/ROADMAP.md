@@ -15,6 +15,7 @@ Amp, Warp, GitHub Copilot and Continue.
   joins it before the agent's next step; one that arrives too late goes out when it ends.
 - **Test and lint loop** (0.14.0): `/check pytest -q` runs after the agent's edits; failures go
   back to it until they pass or three tries are used.
+- **Automatic model switching** (0.19.0): when a model runs out of credits or hits a limit, the turn goes on with the next one: paid models first, then free models best first, then a local one (`/fallback`).
 - **Pick up where you left off** (0.18.0): the app reopens the last conversation and unsent drafts, asks before quitting mid-answer, offers Continue for answers cut off by a quit or crash; incremental saving and windowed drawing for very long sessions.
 - **Interface polish and studio themes** (0.17.0): depth, motion and quieter sidebar; Dusk, Graphite and Carbon themes; text size, density, width, font and message style settings.
 - **Small model** (0.16.0): titles and summaries on a cheaper model you pick (`/small`).

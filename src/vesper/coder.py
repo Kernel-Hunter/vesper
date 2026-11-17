@@ -452,6 +452,7 @@ class Session:
         self.tokens = {"input": 0, "output": 0, "cached": 0, "context": 0}
         self._llm = llm
         self.small_llm = None                       # cheaper model for summaries and titles (None: use the main one)
+        self.switcher = None                        # fallback.Switcher when automatic switching is on
         self._agent = None
         self._agent_key = None
         self._pending: list[tuple[str, dict]] = []  # events raised by tools while the agent runs
@@ -556,17 +557,23 @@ class Session:
             if cut:
                 session.workspace._seen.clear()  # trimmed results may need to be read again
                 request = request.override(messages=messages)
-            for _heal in range(4):
-                if request.model is not session._llm:  # a setting was dropped earlier in this turn
+            healed = switched = 0
+            while True:
+                if request.model is not session._llm:  # a setting was dropped, or the model switched
                     request = request.override(model=session._llm)
                 try:
                     response = handler(request)
                     break
-                except Exception as exc:  # noqa: BLE001 - re-raised unless a refused setting explains it
-                    fixed = prov.adapt(session._llm, exc)
-                    if fixed is None or _heal == 3:
-                        raise
-                    session._llm, session._agent = fixed, None
+                except Exception as exc:  # noqa: BLE001 - re-raised unless a refused setting or a switch explains it
+                    fixed = prov.adapt(session._llm, exc) if healed < 3 else None
+                    if fixed is not None:
+                        healed += 1
+                        session._llm, session._agent = fixed, None
+                        continue
+                    if switched < 40 and session._switch_after(exc):
+                        switched += 1
+                        continue
+                    raise
             example_retry = False
             for _attempt in range(2):
                 msg = response if isinstance(response, AIMessage) else next(
@@ -868,6 +875,52 @@ class Session:
             self.title = " ".join(first_text.split())[:80]
             self.store.update_session(self.id, title=self.title)
 
+    # ---------------------------------------------------------------- automatic switching
+    def _use_model(self, entry: dict) -> bool:
+        """Switch this conversation to `entry` ({provider, model}). False when it cannot be built."""
+        from vesper import providers as prov
+
+        try:
+            llm = prov.get_llm(entry["provider"], entry["model"])
+        except Exception as exc:  # noqa: BLE001 - a missing package or key: skip this one
+            self._log("error", detail={"error": f"switch to {entry['provider']}/{entry['model']}: {exc}"[:500]})
+            return False
+        self._llm, self._agent = llm, None
+        self.provider, self.model = entry["provider"], entry["model"]
+        self.context_tokens = prov.context_tokens(entry["provider"], entry["model"])
+        if self.store is not None and self._saved:
+            self.store.update_session(self.id, provider=self.provider, model=self.model)
+        return True
+
+    def _switch_after(self, exc: BaseException) -> bool:
+        """After a failed model call: move to the next model in the fallback order when the
+        error is about credits, quota, rate limits, the key or a missing model."""
+        from vesper import fallback
+
+        reason = fallback.classify(exc)
+        if self.switcher is None or reason is None:
+            return False
+        before = f"{self.provider}/{self.model}"
+        self.switcher.mark(self.provider, self.model, reason)
+        while (nxt := self.switcher.next_after(self.provider, self.model)) is not None:
+            if self._use_model(nxt):
+                why = fallback.REASONS[reason]
+                self._log("switch", detail={"from": before, "to": f"{nxt['provider']}/{nxt['model']}", "reason": reason})
+                self._event("notice", {"text": f"{before} {why}, so Vesper switched to {nxt['label']} {nxt['model']} and kept going."})
+                self._event("model", {"provider": self.provider, "model": self.model})
+                return True
+            self.switcher.mark(nxt["provider"], nxt["model"], "auth")
+        self._event("notice", {"text": f"{before} {fallback.REASONS[reason]}, and no other model in the fallback list "
+                                       "can take over right now. Add a key or wait for the limits to reset."})
+        return False
+
+    def start_with_preferred(self) -> None:
+        """At the start of a turn: go back to the best model whose wait is over."""
+        best = self.switcher.preferred() if self.switcher is not None else None
+        if best is not None and (best["provider"], best["model"]) != (self.provider, self.model):
+            if self._use_model(best):
+                self._event("model", {"provider": self.provider, "model": self.model})
+
     def name_with_small_model(self, first_text: str) -> str:
         """Ask the small model for a short title of a new conversation. Returns it ("" when none)."""
         if self.small_llm is None or self.store is None or not self._saved:
@@ -963,6 +1016,7 @@ class Session:
         """`shown` is what the user typed when `text` also carries attached files (for titles and logs).
         `images` are image content blocks (`attachments.image_block`), sent with this message only."""
         self.workspace.stopped = False
+        self.start_with_preferred()  # a model that ran out earlier may be usable again
         self._edited, self._check_rounds = False, 0
         self.workspace._seen.clear()
         new_chat = not self._saved

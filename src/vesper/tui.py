@@ -98,6 +98,7 @@ SLASH = {
     "/undo": "put files back to how they were before Vesper's last changes",
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
+    "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
@@ -175,6 +176,18 @@ def make_small_llm(cfg: dict):
         return None
 
 
+def make_switcher(cfg: dict):
+    """The fallback order when automatic switching is on (None when it is off)."""
+    from vesper import fallback
+    from vesper import providers as prov
+
+    if not fallback.settings()["enabled"]:
+        return None
+    pid = cfg.get("provider") or "ollama"
+    model = cfg.get("model") or (prov.PROVIDERS[pid].chat_model if pid in prov.PROVIDERS else "")
+    return fallback.Switcher(lambda: fallback.chain_for(pid, model))
+
+
 def context_tokens(cfg: dict) -> int:
     from vesper import providers as prov
 
@@ -236,6 +249,7 @@ class App:
             context_tokens=context_tokens(self.cfg),
         )
         self.session.small_llm = make_small_llm(self.cfg)
+        self.session.switcher = make_switcher(self.cfg)
 
     # ----- approvals -----
     def _approve_from_tool(self, action: dict) -> str:
@@ -634,6 +648,34 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def fallback(self, arg: str) -> None:
+        from vesper import fallback
+
+        word = arg.strip().lower()
+        if word in ("on", "off"):
+            fallback.save(enabled=word == "on")
+            self.session.switcher = make_switcher(self.cfg)
+            note("Automatic switching is on: when a model runs out of credits or hits a limit, Vesper moves to the "
+                 "next one and keeps working. /fallback list shows the order." if word == "on"
+                 else "Automatic switching is off: an out-of-credits error stops the answer.")
+            return
+        if word not in ("", "list"):
+            note("Use /fallback on, /fallback off or /fallback list.")
+            return
+        state = "on" if fallback.settings()["enabled"] else "off"
+        if word == "":
+            note(f"Automatic switching is {state}. /fallback list shows the order; /fallback on or off changes it.")
+            return
+        note("Reading your providers' model lists…")
+        pid = self.cfg.get("provider") or "ollama"
+        order = fallback.chain_for(pid, self.cfg.get("model") or "")
+        if not order:
+            note("No models to fall back on yet: add an API key with /key, or start Ollama.", WARN)
+            return
+        for i, e in enumerate(order, 1):
+            console.print(f"  {i:>2}. {e['label']:<22} {e['model']}  [{e['why']}]")
+        note(f"Automatic switching is {state}.")
+
     def small(self, arg: str) -> None:
         from vesper import providers as prov
 
@@ -942,6 +984,8 @@ class App:
             self.check(arg)
         elif cmd == "/small":
             self.small(arg)
+        elif cmd == "/fallback":
+            self.fallback(arg)
         elif cmd == "/permissions":
             self.permissions(arg)
         elif cmd == "/mcp":

@@ -243,6 +243,21 @@ Small model in the app; `/small off` goes back to the main model. The first mess
 chat then gets a short title such as "Fix login redirect". If the small model fails, the
 main model writes the summary and the chat keeps its first words as the title.
 
+### Switch models when credits run out
+
+Turn on automatic switching with `/fallback on` in the terminal, or Settings, Models,
+Automatic switching in the app. When a model runs out of credits or quota, hits a rate
+limit, refuses its key or has been retired, Vesper moves to the next model and repeats the
+same step, so the task goes on without an error.
+
+The order is built from the keys you have. Your own model comes first, then the strongest
+paid model each of your other keys can use, then free models ranked from strongest to
+weakest (OpenRouter `:free` models, and the free plans of Groq, Cerebras, Google, NVIDIA
+and Mistral), and last a model on Ollama if it is running. `/fallback list` shows the
+order. In the app you can move models up or down and remove them; "Reset to automatic
+order" goes back. A model that failed waits ten minutes after a rate limit and six hours
+after running out of credits before Vesper tries it again.
+
 ### Token use
 
 Vesper is built to spend few tokens per step:
@@ -510,7 +525,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.18.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.19.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

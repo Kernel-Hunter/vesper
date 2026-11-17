@@ -529,6 +529,7 @@ class Engine:
         session.workspace.on_auto = lambda action: events.put(("auto", action))
         session.emit = lambda kind, data: events.put((kind, data))  # checks show while they run
         session.small_llm = self.small_llm()
+        self._set_switcher(session)
         def work():
             try:
                 for item in session.ask(text, shown=shown["question"], images=image_blocks):
@@ -754,6 +755,20 @@ class Engine:
             running = any(e["session"].id == row["id"] and e["lock"].locked() for e in self._sessions.values())
         return {**row, "turns": transcript(messages), "context_report": report, "last_usage": db.last_usage(row["id"]),
                 "cut_off": not running and bool(messages) and db.cut_off(row["id"])}
+
+    def _set_switcher(self, session) -> None:
+        """Automatic switching on: give the chat a fallback order (kept across its turns)."""
+        from vesper import fallback
+
+        fb = fallback.settings()
+        if not fb["enabled"]:
+            session.switcher = None
+            return
+        s = self.settings
+        key = (s["provider"], s["model"], json.dumps(fb["chain"]))
+        if session.switcher is None or getattr(session, "_switcher_key", None) != key:
+            session.switcher = fallback.Switcher(lambda: fallback.chain_for(s["provider"], s["model"] or prov.PROVIDERS[s["provider"]].chat_model))
+            session._switcher_key = key
 
     def busy_count(self) -> int:
         """How many answers are running right now (the desktop app asks before quitting)."""
@@ -1048,6 +1063,31 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(400, "Send kind (commands or hosts) and the rule to remove.")
         permissions.remove_rule(rule, "allow_commands" if kind == "commands" else "allow_hosts")
         return get_permissions()
+
+    @app.get("/api/fallback", dependencies=[Depends(auth)])
+    def fallback_state(order: int = 0):
+        from vesper import fallback
+
+        fb = fallback.settings()
+        s = engine.settings
+        out = {**fb, "order": None}
+        if order:  # reads every provider's model list: a few seconds the first time
+            out["order"] = fallback.chain_for(s["provider"], s["model"] or prov.PROVIDERS[s["provider"]].chat_model)
+        return out
+
+    @app.post("/api/fallback", dependencies=[Depends(auth)])
+    async def fallback_save(request: Request):
+        from vesper import fallback
+
+        body = await json_body(request)
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Send a JSON object.")
+        try:
+            saved = fallback.save(enabled=body["enabled"] if isinstance(body.get("enabled"), bool) else None,
+                                  chain=body["chain"] if "chain" in body else False)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {**saved, "order": None}
 
     @app.get("/api/busy", dependencies=[Depends(auth)])
     def busy():
