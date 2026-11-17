@@ -91,6 +91,8 @@ def friendly_error(exc: Exception, provider: str) -> str:
     p = prov.PROVIDERS.get(provider)
     label, local = (p.label, p.local) if p else (provider or "The provider", False)
     if "401" in text or "authentication" in low or "invalid x-api-key" in low or "incorrect api key" in low:
+        if p is not None and p.key_env and not p.local and not prov._key(p):
+            return f"Add your {label} API key first. Open Settings and paste a valid key."
         return f"{label} rejected the API key. Open Settings and paste a valid key."
     if "connection" in low and local:
         return f"Cannot reach {label}. Start it first (for Ollama: open the Ollama app or run `ollama serve`)."

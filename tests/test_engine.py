@@ -8,7 +8,8 @@ import os
 import pytest
 
 
-def test_friendly_error_names_the_provider(server):
+def test_friendly_error_names_the_provider(server, monkeypatch):
+    monkeypatch.setattr(server.prov, "_key", lambda p: "sk-test")  # a key was set, and the provider refused it
     msg = server.friendly_error(Exception("Error code: 401 - invalid x-api-key"), "anthropic")
     assert msg.startswith("Anthropic Claude rejected the API key")
     assert "Cannot reach Ollama" in server.friendly_error(ConnectionError("connection refused"), "ollama")
@@ -112,3 +113,15 @@ def test_module_home_follows_env(tmp_path, monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(providers)
+
+
+def test_providers_build_without_a_key_and_say_to_add_one(server, monkeypatch):
+    from vesper import providers as prov
+
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(prov, "_key", lambda p: None)
+    for pid in prov.PROVIDERS:  # the openai package refuses a missing key at construction
+        prov.get_llm(pid, "some-model")
+    err = RuntimeError("Error code: 401 - invalid api key")
+    assert server.friendly_error(err, "openai").startswith("Add your OpenAI API key first.")

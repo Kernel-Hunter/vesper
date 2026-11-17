@@ -247,7 +247,7 @@ def get_llm(provider: str | None = None, model: str | None = None, temperature: 
             extra = {"thinking": {"type": "enabled", "budget_tokens": 4096}, "max_tokens": 16_000}
         elif thinking != "off":
             extra = {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": thinking}}
-        return ChatAnthropic(model=model, api_key=_key(p), **extra)
+        return ChatAnthropic(model=model, api_key=_key(p) or "not-set", **extra)
     if p.id == "ollama":
         from langchain_ollama import ChatOllama
 
@@ -261,7 +261,9 @@ def get_llm(provider: str | None = None, model: str | None = None, temperature: 
         # The Responses API, with no temperature: OpenAI's newer models refuse tools on the
         # older chat endpoint and refuse a temperature, and every chat model accepts this.
         extra = {"reasoning": {"effort": thinking, "summary": "auto"}} if thinking != "off" else {}
-        return ChatOpenAI(model=model, api_key=_key(p), use_responses_api=True, **extra)
+        # No key yet: build anyway (the openai package refuses a missing key at construction);
+        # the first request then fails with a clear "add your key" error instead of a crash.
+        return ChatOpenAI(model=model, api_key=_key(p) or "not-set", use_responses_api=True, **extra)
     if thinking != "off":  # reasoning models take an effort level and no temperature
         return ChatOpenAI(model=model, base_url=_base_url(p), api_key=_key(p) or "not-needed",
                           reasoning_effort=thinking)

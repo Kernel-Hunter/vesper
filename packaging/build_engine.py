@@ -26,7 +26,7 @@ OUT = ROOT / "apps" / "desktop" / "engine"
 WORK = ROOT / "build" / "engine"
 
 # Imported lazily or loaded by name, so PyInstaller cannot see them on its own.
-SUBMODULES = ["langchain_openai", "langchain_anthropic", "langchain_ollama", "ollama", "tiktoken_ext", "uvicorn"]
+SUBMODULES = ["vesper", "langchain_openai", "langchain_anthropic", "langchain_ollama", "ollama", "tiktoken_ext", "uvicorn"]
 COLLECT_ALL: list[str] = ["faster_whisper", "ctranslate2", "av", "tokenizers", "onnxruntime"]
 METADATA = ["langchain", "langchain-core", "langchain-openai", "langchain-anthropic", "langchain-ollama",
             "ollama", "anthropic",

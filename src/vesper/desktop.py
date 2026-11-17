@@ -170,7 +170,16 @@ def smoke_test() -> int:
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/state", headers={"X-Token": token})
     state = json.load(urllib.request.urlopen(req, timeout=10))
     page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read()
-    ok = bool(state.get("providers")) and b"<html" in page.lower()
+    import importlib
+
+    for name in ("mcp", "commands", "documents", "webtools", "attachments"):  # loaded lazily: prove they are packaged
+        importlib.import_module(f"vesper.{name}")
+    extras = {}
+    for path in ("/api/mcp", "/api/commands"):
+        r = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"X-Token": token})
+        extras[path] = json.load(urllib.request.urlopen(r, timeout=10))
+    ok = (bool(state.get("providers")) and b"<html" in page.lower()
+          and "servers" in extras["/api/mcp"] and "commands" in extras["/api/commands"])
     print("smoke", "ok" if ok else f"failed: {sorted(state)}")
     return 0 if ok else 1
 
