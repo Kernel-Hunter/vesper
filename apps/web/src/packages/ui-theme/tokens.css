@@ -18,11 +18,11 @@
 /* ---------- dark (default) ---------- */
 :root, [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #232322;
-  --bg-side: #1b1b1a;
-  --layer-1: #2b2b29;
-  --layer-2: #353533;
-  --layer-3: #42423f;
+  --bg: #1a1a19;
+  --bg-side: #262624;
+  --layer-1: #2a2a28;
+  --layer-2: #343432;
+  --layer-3: #41413e;
   --text: #f7f6f4;
   --text-2: #dedcd8;
   --text-3: #aaa7a2;
@@ -34,7 +34,7 @@
   --accent-soft: rgba(255, 122, 69, .14);
   --brand: #ff7a45; --brand-2: #ffc34d;
   --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
-  --bubble: #333331;
+  --bubble: #2e2e2c;
   --send-bg: #ff7a45; --send-fg: #1a0d06;
   --shadow: 0 24px 64px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
   --scrim: rgba(0, 0, 0, .55);

@@ -1,21 +1,16 @@
 .thread { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; scroll-padding-bottom: 24px; }
 .col { width: var(--col); margin: 0 auto; padding: 28px 0 40px; display: flex; flex-direction: column; gap: 26px; }
 
-/* empty state: a greeting over a centered message box */
+/* empty state: logo, question and quick starts, stacked in the middle */
 .empty {
-  width: var(--col); margin: 0 auto; padding: 0 0 22px;
-  display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 14px; text-align: center;
+  min-height: 100%; width: var(--col); margin: 0 auto; padding: 40px 0 24px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;
   animation: rise var(--t-slow) var(--ease);
 }
-.empty-logo { flex: none; filter: drop-shadow(0 6px 22px var(--accent-soft)); }
-.hero-title {
-  display: flex; align-items: center; justify-content: center; gap: 14px; margin: 0;
-  font-family: var(--display); font-size: clamp(24px, 2.6vw, 31px); text-wrap: balance; font-weight: 400; letter-spacing: -.015em; line-height: 1.2; color: var(--text);
-}
+.empty-logo { flex: none; margin-bottom: 4px; filter: drop-shadow(0 6px 22px var(--accent-soft)); }
+.hero-title { margin: 0; font-size: 28px; font-weight: 640; letter-spacing: -.02em; line-height: 1.25; color: var(--text); text-wrap: balance; }
 .hero-title em { font-style: normal; color: var(--accent); }
-.main.hero .thread { flex: none; margin-top: auto; overflow: visible; }
-.main.hero .composer-wrap { padding-bottom: 0; }
-.hero-after { width: var(--col); margin: 14px auto auto; padding-bottom: 48px; animation: rise var(--t-slow) var(--ease); }
+.empty .sub { margin: 0 0 12px; max-width: 520px; color: var(--text-2); text-wrap: balance; }
 .suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .suggestion {
   display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: var(--r-sm);
@@ -32,7 +27,6 @@
   white-space: pre-wrap; max-width: 100%;
 }
 .boot::after { content: '█'; animation: blink 1s steps(1) infinite; margin-left: 2px; }
-@media (max-width: 640px) { .hero-title { flex-direction: column; } }
 
 /* messages */
 .msg { display: flex; gap: 14px; animation: rise var(--t-mid) var(--ease); }

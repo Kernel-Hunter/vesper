@@ -20,8 +20,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Quiet conversation view** (0.11.0): tool calls in a row fold into one line ("Read 3 files,
   edited a file +12 −3") that opens to show each step, a slimmer message box, and lines
   added and removed per file in the Environment panel.
-- **New start screen and answers** (0.12.0): a greeting over a centered message box with quick
-  starts, answers without an avatar column, and code blocks with syntax colors, the language and
+- **New start screen and answers** (0.12.0): quick starts on the start screen, answers without an avatar column, and code blocks with syntax colors, the language and
   a Copy button.
 - **Background commands** (0.10.1): dev servers and watchers keep running; the agent reads
   their new output and stops them.

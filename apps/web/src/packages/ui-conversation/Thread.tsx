@@ -19,31 +19,20 @@ function greeting(): string {
 function Empty() {
   const workspace = useStore(s => s.server?.settings.workspace ?? '')
   const terminal = useStore(s => s.appearance.theme === 'terminal')
-  if (terminal) {
-    return (
-      <div className="empty">
+  return (
+    <div className="empty">
+      <LogoMark size={56} className="empty-logo" blink />
+      {terminal ? (
         <pre className="boot" aria-label="Vesper ready">{`VESPER :: coding agent
 > cwd ................ ${workspace || '~'}
 > tools .............. read, search, edit, run, web
 > type a task and press ENTER`}</pre>
-      </div>
-    )
-  }
-  return (
-    <div className="empty">
-      <h1 className="hero-title">
-        <LogoMark size={40} className="empty-logo" blink />
-        <span>{greeting()}{workspace ? <>. What are we building in <em>{folderName(workspace)}</em>?</> : '. What are we building?'}</span>
-      </h1>
-    </div>
-  )
-}
-
-/** Quick starts under the message box of an empty chat. */
-export function HeroSuggestions() {
-  const workspace = useStore(s => s.server?.settings.workspace ?? '')
-  return (
-    <div className="hero-after">
+      ) : (
+        <>
+          <h1 className="hero-title">{workspace ? <>What are we building in <em>{folderName(workspace)}</em>?</> : 'What are we building today?'}</h1>
+          <p className="sub">{greeting()}. Vesper reads your files, edits code and runs commands, and asks before it changes anything.</p>
+        </>
+      )}
       <div className="suggestions">
         {SUGGESTIONS.map(q => (
           <button type="button" key={q.label} className="suggestion" title={q.prompt} onClick={() => void send(q.prompt)}>
