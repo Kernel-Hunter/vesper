@@ -581,6 +581,11 @@ class Engine:
             out.names.append(name)
         return out.message(question), out.images, {"question": question, "names": out.names, "problems": out.problems}
 
+    def steer_chat(self, chat_id: str, text: str) -> bool:
+        """Add a message to a running answer; False when nothing is running."""
+        entry = self._sessions.get(chat_id)
+        return bool(entry and entry["lock"].locked() and not entry.get("stopping") and entry["session"].steer(text))
+
     def stop_chat(self, chat_id: str) -> bool:
         """Stop a running answer: end its command and refuse the next tool call."""
         entry = self._sessions.get(chat_id)
@@ -1025,6 +1030,14 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         if expect is not None and not isinstance(expect, str):
             raise HTTPException(400, "text must be a string.")
         return await run_in_threadpool(engine.rewind_chat, chat_id, sid, n, expect, bool(body.get("files")), turn)
+
+    @app.post("/api/chats/{chat_id}/steer", dependencies=[Depends(auth)])
+    async def steer_chat(request: Request, chat_id: str):
+        body = await json_body(request)
+        text = body.get("text") if isinstance(body, dict) else None
+        if not CHAT_ID.match(chat_id) or not isinstance(text, str) or not text.strip() or len(text) > MAX_QUESTION_CHARS:
+            raise HTTPException(400, "Send {\"text\": \"...\"} for a chat id of 1-64 letters, digits, - or _.")
+        return {"accepted": engine.steer_chat(chat_id, text)}
 
     @app.post("/api/chats/{chat_id}/stop", dependencies=[Depends(auth)])
     def stop_chat(chat_id: str):

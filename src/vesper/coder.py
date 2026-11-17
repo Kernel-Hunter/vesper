@@ -24,12 +24,13 @@ import json
 import math
 import re
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_model_call
+from langchain.agents.middleware import before_model, wrap_model_call
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -139,6 +140,8 @@ def split_thinking(text: str) -> tuple[str, str]:
             "".join(t for k, t in parts if k == "token").strip())
 
 
+STEER_KEY = "vesper_steer"  # on a message the user sent while the agent was working (Session.steer)
+MAX_STEER_CHARS = 20_000
 SHOWN_KEY = "vesper_typed"  # on a message sent by a custom command: the "/name args" the user typed
 
 
@@ -447,6 +450,9 @@ class Session:
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
         self._told_trimmed = False                  # the "shortened copy" notice is shown once per session
         self._told_mcp: set[str] = set()            # MCP problems already shown in this session
+        self._steer: list[str] = []                 # messages sent during a turn, joined at its next step
+        self._steer_lock = threading.Lock()
+        self._running = False                       # a turn is streaming (steering is possible)
         workspace.on_cwd = self._on_cwd
         workspace.on_change = self._on_change
         workspace.on_tasks = lambda items: self._pending.append(("tasks", {"items": [dict(t) for t in items]}))
@@ -575,7 +581,41 @@ class Session:
                 response = handler(request.override(messages=[*request.messages, HumanMessage(RETRY_HINT)]))
             return response
 
-        return [guard, *prov.agent_middleware(self._llm)]
+        @before_model
+        def steering(state, runtime):
+            # Messages the user sent while the agent worked join the turn before the next model call.
+            texts = session._take_steer()
+            if not texts:
+                return None
+            session._turn_id = max(int(time.time() * 1000), session._turn_id + 1)
+            return {"messages": [HumanMessage("\n\n".join(texts), id=f"{TURN_ID_PREFIX}{session._turn_id}",
+                                              additional_kwargs={STEER_KEY: texts})]}
+
+        return [guard, steering, *prov.agent_middleware(self._llm)]
+
+    # ---------------------------------------------------------------- steering
+    def steer(self, text: str) -> bool:
+        """Add a message to the running turn; the model sees it before its next step.
+
+        Returns False when no turn is running (send it as a new message instead)."""
+        text = text.strip()[:MAX_STEER_CHARS]
+        with self._steer_lock:
+            if not text or not self._running:
+                return False
+            self._steer.append(text)
+            return True
+
+    def _take_steer(self) -> list[str]:
+        with self._steer_lock:
+            texts, self._steer = self._steer, []
+            return texts
+
+    def _end_steering(self) -> list[str]:
+        """The turn is over: steering closes, and what the model never saw goes back to the caller."""
+        with self._steer_lock:
+            self._running = False
+            texts, self._steer = self._steer, []
+            return texts
 
     # ---------------------------------------------------------------- context
     def compact(self, keep_turns: int = KEEP_TURNS) -> bool:
@@ -799,6 +839,8 @@ class Session:
 
         keep(messages)  # the question is on disk before the model answers
         yield "turn", {"id": messages[-1].id}
+        with self._steer_lock:
+            self._steer, self._running = [], True
         partial, failed = "", False
         final: list[BaseMessage] | None = None
         streamed_ids: set[str] = set()
@@ -862,6 +904,12 @@ class Session:
                                     tool_started[call.get("id") or ""] = time.monotonic() - self.workspace.waited
                                     yield "tool_start", {"id": call.get("id"), "name": call["name"],
                                                          "args": call.get("args", {})}
+                            elif isinstance(m, HumanMessage) and STEER_KEY in m.additional_kwargs:
+                                for kind, part in splitter.flush():
+                                    yield kind, {"text": part}
+                                partial = ""
+                                self._log("prompt", detail={"text": text_of(m.content), "steer": True})
+                                yield "steer", {"id": m.id, "texts": list(m.additional_kwargs[STEER_KEY])}
                             elif isinstance(m, ToolMessage):
                                 out = text_of(m.content)
                                 ok = m.status != "error" and not out.startswith("Error:")
@@ -887,10 +935,13 @@ class Session:
             raise
         finally:
             # Keep what happened even if the turn was stopped or failed half way.
+            unused = self._end_steering()
             keep(final or messages, partial, failed)
         usage = self._usage(final or [], len(messages), started + (self.workspace.waited - waited_before), tools)
         self._log("usage", detail=usage, ms=int(usage["seconds"] * 1000))
         yield "usage", usage
+        if unused:  # sent too late for this turn: the front end sends them as new messages
+            yield "unsteered", {"texts": unused}
         yield "done", {}
 
     def _drain(self):

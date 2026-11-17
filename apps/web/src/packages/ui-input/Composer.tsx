@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react'
 import {
   attachFiles, COMMANDS, currentAttachments, currentBusy, currentChat, currentDraft, currentRemoteBusy, isDesktop, openSettings, pickAttachFolder, pickAttachments, pickFolder, removeAttachment,
-  currentQueue, queueMessage, runCommand, saveSettings, send, setDraft, stop, togglePlan, unqueue, useStore,
+  currentQueue, runCommand, steerMessage, saveSettings, send, setDraft, stop, togglePlan, unqueue, useStore,
 } from '../store/store'
 import { Icon, type IconName } from '../ui-primitives/Icon'
 import { ModelPicker } from '../ui-model-selection/ModelPicker'
@@ -102,7 +102,7 @@ export function Composer() {
   const submit = (): void => {
     const q = text.trim()
     if (streaming && q && !q.startsWith('/') && !attachments.length && q.length <= MAX_LEN && dictation.phase === 'idle') {
-      queueMessage(q) // typed while it works: goes out when this answer ends
+      steerMessage(q) // typed while it works: joins the answer at its next step, or goes out after it
       setText('')
       return
     }
@@ -157,7 +157,7 @@ export function Composer() {
         {!!queue.length && chatId && (
           <div className="queue-row" aria-label="Messages waiting to be sent">
             {queue.map((q, i) => (
-              <span key={`${i}:${q}`} className="queue-chip" title="Sent when the current answer ends. Click to edit.">
+              <span key={`${i}:${q}`} className="queue-chip" title="Joins the answer at its next step, or is sent when it ends. Click to edit.">
                 <Icon name="up" size={12} />
                 <button type="button" className="queue-text" onClick={() => { const t = unqueue(chatId, i); if (t) setText(old => old ? `${old}\n${t}` : t); ref.current?.focus() }}>{q}</button>
                 <button type="button" className="att-x" onClick={() => unqueue(chatId, i)} aria-label="Remove from the queue"><Icon name="close" size={12} /></button>
@@ -186,7 +186,7 @@ export function Composer() {
           onChange={e => setText(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
-          placeholder={streaming ? 'Type the next message: it is sent when this answer ends' : theme === 'terminal' ? 'task --here' : 'Ask Vesper anything · / for commands, @ for files'}
+          placeholder={streaming ? 'Add to the task: Vesper reads it at its next step' : theme === 'terminal' ? 'task --here' : 'Ask Vesper anything · / for commands, @ for files'}
           aria-label="Message"
           spellCheck
         />

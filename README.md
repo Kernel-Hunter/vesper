@@ -314,6 +314,10 @@ and an answer that changed files gets an undo button. `/undo`, `/compact` and `/
 work when typed into the message box. The square Stop button ends the answer within a
 second or two, even while the model is still thinking, and stops any command it started.
 
+You can keep typing while it works. A message sent during an answer joins it before the
+agent's next step, so "also update the tests" or "use the other folder" changes the work in
+progress without stopping it. If the answer ends first, the message is sent as the next one.
+
 Hover over one of your own messages for Copy, Edit and Rewind. Edit lets you change the text
 and send it again; Rewind goes back to before that message and puts its text in the message
 box. Both forget that message and everything after it, and both can also put back the files
@@ -466,7 +470,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.12.2` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.13.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

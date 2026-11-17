@@ -167,6 +167,8 @@ export type StreamEvent =
   | { event: 'approval'; data: ApprovalRequest }
   | { event: 'approval_done'; data: { id: string; answer: ApprovalAnswer; timeout?: boolean } }
   | { event: 'stopped'; data: Record<string, never> }
+  | { event: 'steer'; data: { id: string; texts: string[] } }
+  | { event: 'unsteered'; data: { texts: string[] } }
   | { event: 'done'; data: Record<string, never> }
 
 /** Token from the URL hash (#token=...), kept for the session and removed from the address bar. */
@@ -247,6 +249,11 @@ export const api = {
   forkSession: async (id: string): Promise<string> =>
     ((await (await request(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: 'POST' })).json()) as { id: string }).id,
   /** Stops a running answer in the engine (ends its command, refuses further tools). */
+  /** Adds a message to the running answer of a chat; false when nothing is running there. */
+  steerChat: async (chatId: string, text: string): Promise<boolean> =>
+    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/steer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    })).json()) as { accepted: boolean }).accepted,
   stopChat: async (chatId: string): Promise<boolean> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: 'POST' })).json()) as { stopped: boolean }).stopped,
   /** Forgets one of the user's messages and everything after it; `files` also puts back files changed since. */

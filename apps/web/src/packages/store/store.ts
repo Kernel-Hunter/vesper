@@ -346,6 +346,16 @@ const NO_QUEUE: string[] = []
 export const currentQueue = (s: State): string[] => (s.currentId ? s.queued[s.currentId] ?? NO_QUEUE : NO_QUEUE)
 
 /** Keeps a message typed while the open chat is answering; it goes out when the answer ends. */
+/** Typed while the chat works: waits in the queue and also asks the engine to add it to the
+ *  running answer. When the engine takes it, a 'steer' event removes it from the queue; if the
+ *  answer ends first, it is sent as the next message like any queued one. */
+export function steerMessage(text: string): void {
+  const id = state.currentId
+  if (!id) return
+  queueMessage(text)
+  void api.steerChat(id, text.trim()).catch(() => undefined)
+}
+
 export function queueMessage(text: string): void {
   const id = state.currentId
   if (!id || !text.trim()) return
@@ -405,6 +415,7 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
   const bot: Msg = { ...blankMsg('bot'), streaming: true, plan: settings?.agent_mode === 'plan' || undefined }
   const sessionId = state.chats.find(c => c.id === chatId)?.sessionId
   const cid = chatId
+  let botId = bot.id // a message steered into the answer starts a new answer bubble
   set(st => ({
     streamingIds: [...st.streamingIds, cid],
     attachments: opts.retry ? st.attachments : { ...st.attachments, [attachmentKey]: [] },
@@ -421,14 +432,14 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
     if (!pending) return
     const add = pending
     pending = ''
-    patchMessage(cid, bot.id, m => ({ text: m.text + add }))
+    patchMessage(cid, botId, m => ({ text: m.text + add }))
   }
 
   const controller = new AbortController()
   aborts.set(cid, controller)
   try {
     const patchTool = (match: (t: ToolStep) => boolean, patch: (t: ToolStep) => Partial<ToolStep>): void =>
-      patchMessage(cid, bot.id, m => {
+      patchMessage(cid, botId, m => {
         // Newest match first: the same tool can run several times in one answer.
         const i = m.tools.map(match).lastIndexOf(true)
         if (i < 0) return {}
@@ -464,7 +475,7 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
           flush()
           const more = thinking
           thinking = true
-          patchMessage(cid, bot.id, m => {
+          patchMessage(cid, botId, m => {
             const last = m.thoughts[m.thoughts.length - 1]
             if (more && last) return { thoughts: [...m.thoughts.slice(0, -1), { ...last, text: last.text + e.data.text }] }
             return { thoughts: [...m.thoughts, { at: m.text.length, n: m.tools.length + m.thoughts.length, text: e.data.text }] }
@@ -472,18 +483,18 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
           break
         }
         case 'tool_draft':
-          patchMessage(cid, bot.id, () => ({ draft: e.data }))
+          patchMessage(cid, botId, () => ({ draft: e.data }))
           break
         case 'tasks':
-          patchMessage(cid, bot.id, () => ({ tasks: e.data.items }))
+          patchMessage(cid, botId, () => ({ tasks: e.data.items }))
           break
         case 'tool_start':
           flush()
           if (e.data.name === 'update_tasks') { // drawn as the task list, not as a tool row
-            patchMessage(cid, bot.id, () => ({ draft: undefined }))
+            patchMessage(cid, botId, () => ({ draft: undefined }))
             break
           }
-          patchMessage(cid, bot.id, m => ({
+          patchMessage(cid, botId, m => ({
             draft: undefined,
             tools: [...m.tools, {
               id: e.data.id ?? uid(), name: e.data.name, args: e.data.args ?? {}, at: m.text.length,
@@ -503,7 +514,7 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
           if (e.data.diff) patchTool(t => t.name === e.data.tool && t.output === undefined, () => ({ diff: e.data.diff }))
           break
         case 'usage':
-          patchMessage(cid, bot.id, () => ({ usage: e.data }))
+          patchMessage(cid, botId, () => ({ usage: e.data }))
           set(st => ({ chats: st.chats.map(c => c.id === cid ? { ...c, contextReport: e.data.context_report, lastUsage: e.data } : c) }))
           break
         case 'approval':
@@ -519,7 +530,7 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
           if (!frame) frame = requestAnimationFrame(flush)
           break
         case 'error':
-          patchMessage(cid, bot.id, () => ({ error: e.data.message }))
+          patchMessage(cid, botId, () => ({ error: e.data.message }))
           break
         case 'cwd': // update only the conversation that moved
           set(st => ({ chats: st.chats.map(c => c.id === cid ? { ...c, cwd: e.data.path } : c) }))
@@ -530,18 +541,34 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
         case 'stopped':
           stopped = true
           break
+        case 'steer': { // a message typed during the answer joined it: show it, then continue in a new bubble
+          flush()
+          const asked: Msg = { ...blankMsg('user'), text: e.data.texts.join('\n\n'), turnId: e.data.id }
+          const next: Msg = { ...blankMsg('bot'), streaming: true }
+          const done = botId
+          botId = next.id
+          set(st => {
+            let queue = st.queued[cid] ?? []
+            for (const t of e.data.texts) { const i = queue.indexOf(t); if (i >= 0) queue = queue.filter((_, j) => j !== i) }
+            return {
+              queued: { ...st.queued, [cid]: queue },
+              chats: st.chats.map(c => (c.id === cid ? { ...c, messages: [...c.messages.map(m => (m.id === done ? { ...m, streaming: false, draft: undefined } : m)), asked, next] } : c)),
+            }
+          })
+          break
+        }
         default:
           break
       }
     }, controller.signal)
   } catch (e) {
     if (!(e instanceof DOMException && e.name === 'AbortError')) {
-      patchMessage(cid, bot.id, () => ({ error: errorText(e) }))
+      patchMessage(cid, botId, () => ({ error: errorText(e) }))
     }
   } finally {
     if (frame) cancelAnimationFrame(frame)
     flush()
-    patchMessage(cid, bot.id, m => ({
+    patchMessage(cid, botId, m => ({
       streaming: false,
       draft: undefined,
       text: stopped && m.text ? `${m.text}\n\n_Stopped._` : m.text || (m.error || m.tools.length ? '' : '_Stopped._'),
