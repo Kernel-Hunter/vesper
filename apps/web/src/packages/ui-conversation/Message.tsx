@@ -211,15 +211,6 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
             <span>{msg.error}</span>
           </div>
         )}
-        {!msg.streaming && msg.usage && (
-          <div className="usage">
-            {seconds(msg.usage.seconds)}
-            {msg.usage.tools ? ` · ${msg.usage.tools} tool call${msg.usage.tools === 1 ? '' : 's'}` : ''}
-            {` · ${msg.usage.estimated ? '~' : ''}${count(msg.usage.input)} in${msg.usage.cached ? ` (${count(msg.usage.cached)} cached)` : ''}, ${msg.usage.estimated ? '~' : ''}${count(msg.usage.output)} out`}
-            {msg.usage.cost != null && <span title="About this much at the provider's list prices; cached input is often cheaper">{` · ${formatCost(msg.usage.cost)}`}</span>}
-            {msg.undone ? ' · changes undone' : ''}
-          </div>
-        )}
         {last && !msg.streaming && !msg.error && msg.plan && planning && !busy && (
           <div className="plan-bar">
             <button type="button" className="btn primary" onClick={() => void runPlan()}>Run this plan</button>
@@ -233,6 +224,13 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
             {last && edited && !busy && (
               <button type="button" className="icon-btn sm" onClick={() => void undoChanges()} title="Undo the file changes of this answer" aria-label="Undo file changes"><Icon name="undo" size={15} /></button>
             )}
+            {msg.usage && <span className="usage">
+              {seconds(msg.usage.seconds)}
+              {msg.usage.tools ? ` · ${msg.usage.tools} tool call${msg.usage.tools === 1 ? '' : 's'}` : ''}
+              {` · ${msg.usage.estimated ? '~' : ''}${count(msg.usage.input)} in${msg.usage.cached ? ` (${count(msg.usage.cached)} cached)` : ''}, ${msg.usage.estimated ? '~' : ''}${count(msg.usage.output)} out`}
+              {msg.usage.cost != null && <span title="About this much at the provider's list prices; cached input is often cheaper">{` · ${formatCost(msg.usage.cost)}`}</span>}
+              {msg.undone ? ' · changes undone' : ''}
+            </span>}
           </div>
         )}
       </div>

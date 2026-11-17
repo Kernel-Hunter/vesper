@@ -4,7 +4,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14.5px/1.55 var(--font);
-  -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: auto;
   overflow: hidden;
   transition: background-color var(--t-slow) var(--ease), color var(--t-slow) var(--ease);
 }

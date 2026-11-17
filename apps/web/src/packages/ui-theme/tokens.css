@@ -23,9 +23,9 @@
   --layer-1: #2b2b29;
   --layer-2: #353533;
   --layer-3: #42423f;
-  --text: #f2f1ef;
-  --text-2: #c2c0bd;
-  --text-3: #92908d;
+  --text: #f7f6f4;
+  --text-2: #dedcd8;
+  --text-3: #aaa7a2;
   --line: rgba(255, 255, 255, .07);
   --line-2: rgba(255, 255, 255, .13);
   --accent: #ff7a45;
@@ -47,9 +47,9 @@
   --layer-1: #f4efeb;
   --layer-2: #ebe4df;
   --layer-3: #e0d7d1;
-  --text: #1b1411;
-  --text-2: #5a4f4a;
-  --text-3: #8f847e;
+  --text: #14100e;
+  --text-2: #3d3430;
+  --text-3: #6e645e;
   --line: rgba(60, 30, 10, .08);
   --line-2: rgba(60, 30, 10, .14);
   --accent: #a83b16;
