@@ -16,15 +16,19 @@ def long_history(turns: int) -> list:
     return out
 
 
-def test_saving_writes_only_what_changed_and_stays_correct(tmp_path):
+def test_saving_writes_only_what_changed_and_stays_correct(tmp_path, monkeypatch):
+    from vesper import store as store_module
+
     store = Store(tmp_path / "v.db")
     sid = store.create_session(tmp_path)
     history = long_history(1000)
     store.save_messages(sid, history)
+    converted = []
+    real = store_module.messages_to_dict
+    monkeypatch.setattr(store_module, "messages_to_dict", lambda msgs: converted.extend(msgs) or real(msgs))
     history = history + [AIMessage("one more step")]
-    started = time.perf_counter()
     store.save_messages(sid, history)
-    assert time.perf_counter() - started < 0.02  # 4,000 messages: a step costs about as much as a short chat
+    assert len(converted) == 1  # 4,000 saved messages: only the new step is converted and written
     loaded = store.load_messages(sid)
     assert len(loaded) == 4001 and loaded[-1].content == "one more step"
 
