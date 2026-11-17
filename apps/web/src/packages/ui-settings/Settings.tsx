@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { api, type AgentMode, type Permissions, type Provider, type Thinking } from '../connection/api'
+import { api, type AgentMode, type McpState, type Permissions, type Provider, type Thinking } from '../connection/api'
 import {
   canPickFolder, closeSettings, getState, openFolder, pickFolder, saveSettings, setAgentMode, setAppearance, setSettingsTab,
   useStore, type SettingsTab,
@@ -11,6 +11,7 @@ import { Icon, type IconName } from '../ui-primitives/Icon'
 const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
   { id: 'models', label: 'Models and keys', icon: 'key' },
   { id: 'agent', label: 'Agent', icon: 'shield' },
+  { id: 'tools', label: 'Tools (MCP)', icon: 'plug' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
 ]
 
@@ -46,7 +47,7 @@ function Rules() {
           {rows.map(r => (
             <div key={`${r.kind}:${r.rule}`} className="rule-row">
               <code>{r.rule}</code>
-              <span className="dim">{r.kind === 'commands' ? 'command' : 'web site'}</span>
+              <span className="dim">{r.kind === 'hosts' ? 'web site' : r.rule.startsWith('mcp__') ? 'MCP tool' : 'command'}</span>
               <button type="button" className="icon-btn sm" aria-label={`Remove the rule ${r.rule}`} title="Remove"
                 onClick={() => { api.removePermission(r.kind, r.rule).then(setPerms, () => undefined) }}>
                 <Icon name="trash" size={14} />
@@ -56,6 +57,81 @@ function Rules() {
         </div>
       )}
     </Section>
+  )
+}
+
+// ---------------- Tools (MCP) ----------------
+const MCP_EXAMPLE = `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "\${GITHUB_TOKEN}" }
+    }
+  }
+}`
+
+const STATUS_LABEL: Record<string, string> = {
+  ready: 'Ready', starting: 'Starting…', failed: 'Did not start', stopped: 'Stopped',
+  'needs approval': 'Needs your approval', 'not started': 'Starts with the next message',
+}
+
+function ToolsTab() {
+  const [state, setState] = useState<McpState | null>(null)
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState<string | null>(null)
+  const load = (s: McpState): void => { setState(s); setText(s.config || MCP_EXAMPLE) }
+  useEffect(() => { api.mcp().then(load, e => setError(String((e as Error).message))) }, [])
+  useEffect(() => { // a starting server turns ready on its own
+    if (!state?.servers.some(s => s.status === 'starting')) return
+    const t = window.setTimeout(() => { api.mcp().then(setState, () => undefined) }, 1000)
+    return () => window.clearTimeout(t)
+  }, [state])
+  const run = async (action: 'approve' | 'restart' | 'config', body: { name?: string; text?: string } = {}): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try { load(await api.mcpAction(action, body)) } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
+  }
+  if (!state) return error ? <p className="set-desc">{error}</p> : null
+  return (
+    <>
+      <Section title="Servers" desc="MCP servers give the agent more tools: GitHub, databases, browsers, docs and many more. Tools that change things ask first, like commands.">
+        {state.servers.length === 0 ? <p className="set-desc">No servers yet. Add one below, or put a .mcp.json file in a project (the format other harnesses use works as is).</p> : (
+          <div className="mcp-list">
+            {state.servers.map(s => (
+              <div key={`${s.scope}:${s.name}`} className={`mcp-row ${s.status.replace(' ', '-')}`}>
+                <button type="button" className="mcp-main" onClick={() => setOpen(open === s.name ? null : s.name)} aria-expanded={open === s.name}>
+                  <span className={`dot ${s.status === 'ready' ? 'ok' : s.status === 'failed' ? 'bad' : 'off'}`} />
+                  <strong>{s.name}</strong>
+                  <span className="dim">{s.scope === 'project' ? 'this project' : 'all projects'} · {s.transport}</span>
+                  <span className="mcp-status">{STATUS_LABEL[s.status] ?? s.status}{s.status === 'ready' ? ` · ${s.tools.length} tools` : ''}</span>
+                </button>
+                {s.status === 'needs approval' && <button type="button" className="btn primary sm" disabled={busy} onClick={() => void run('approve', { name: s.name })}>Approve</button>}
+                {(s.status === 'failed' || s.status === 'ready') && <button type="button" className="btn sm" disabled={busy} onClick={() => void run('restart', { name: s.name })}>Restart</button>}
+                {open === s.name && (
+                  <div className="mcp-detail">
+                    {s.error && <p className="mcp-error">{s.error}</p>}
+                    {s.status === 'needs approval' && <p className="set-desc">This server comes from {s.file}. Approving it lets that file start a program on this computer; approve only projects you trust.</p>}
+                    {s.tools.length > 0 && <div className="mcp-tools">{s.tools.map(t => <code key={t}>{t}</code>)}</div>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {state.problems.map(p => <p key={p} className="mcp-error">{p}</p>)}
+      </Section>
+      <Section title="Your servers" desc={`Saved in ${state.config_path}, for every project. \${NAME} reads a key from your environment or ~/.vesper/.env, so secrets stay out of the file.`}>
+        <textarea className="mcp-config" spellCheck={false} value={text} onChange={e => setText(e.target.value)} rows={12} aria-label="MCP servers (JSON)" />
+        <div className="mcp-actions">
+          {error && <span className="mcp-error">{error}</span>}
+          <button type="button" className="btn" disabled={busy || text === (state.config || MCP_EXAMPLE)} onClick={() => setText(state.config || MCP_EXAMPLE)}>Reset</button>
+          <button type="button" className="btn primary" disabled={busy} onClick={() => void run('config', { text })}>Save and start</button>
+        </div>
+      </Section>
+    </>
   )
 }
 
@@ -453,6 +529,7 @@ export function Settings() {
           <div className="set-scroll">
             {tab === 'agent' && <AgentTab />}
             {tab === 'models' && <ModelsTab />}
+            {tab === 'tools' && <ToolsTab />}
             {tab === 'appearance' && <AppearanceTab />}
           </div>
         </div>

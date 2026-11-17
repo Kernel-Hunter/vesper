@@ -131,10 +131,10 @@ def test_session_rebuilds_the_agent_for_plan_mode(proj):
     s = Session(fake(call("write_file", path="x.txt", content="x"), AIMessage("Here is the plan."), AIMessage("Done.")), ws)
     events = list(s.ask("add a file"))
     refused = next(d for e, d in events if e == "tool_end")
-    assert not refused["ok"] and "Plan mode" in refused["output"] and s._agent_key == (proj.resolve(), True)
+    assert not refused["ok"] and "Plan mode" in refused["output"] and s._agent_key[:2] == (proj.resolve(), True)
     ws.mode = "yolo"
     list(s.ask("go"))
-    assert s._agent_key == (proj.resolve(), False)
+    assert s._agent_key[:2] == (proj.resolve(), False)
 
 
 # ---------------------------------------------------------------- forgiving edits

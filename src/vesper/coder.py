@@ -44,6 +44,7 @@ from vesper.prompts import COMPACT_PROMPT, agent_system_prompt
 from vesper.store import Store, new_id
 from vesper.workspace import Workspace
 
+MCP_WAIT_S = 10.0              # how long an answer waits for MCP servers that are still starting
 RECURSION_LIMIT = 240            # finite safeguard on model and tool steps per question
 DEFAULT_CONTEXT_TOKENS = 120_000  # assumed context window when the provider does not say
 HISTORY_SHARE = 0.6              # part of the window the history may fill; the rest is prompt, tools and the answer
@@ -439,6 +440,7 @@ class Session:
         self._copies: list[tuple[int, str, bytes | None]] = []  # (turn, path, old bytes), newest last
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
         self._told_trimmed = False                  # the "shortened copy" notice is shown once per session
+        self._told_mcp: set[str] = set()            # MCP problems already shown in this session
         workspace.on_cwd = self._on_cwd
         workspace.on_change = self._on_change
         workspace.on_tasks = lambda items: self._pending.append(("tasks", {"items": [dict(t) for t in items]}))
@@ -464,10 +466,48 @@ class Session:
         self.tokens = {"input": 0, "output": 0, "cached": 0, "context": 0}
         self._copies, self._undone, self.workspace.tasks = [], [], []
 
+    def _mcp_servers(self) -> list:
+        """Start this folder's MCP servers (once per process) and give their tools to the agent.
+
+        Waits a little for servers that are still starting, so the first answer can use them;
+        a slow one joins on a later turn.
+        """
+        from vesper import mcp
+
+        try:
+            servers = mcp.manager().for_root(str(self.workspace.root))
+        except Exception as exc:  # noqa: BLE001 - a broken config must never stop the agent
+            self._mcp_notice(f"MCP: {exc}")
+            return []
+        mcp.Manager.wait(servers, MCP_WAIT_S)
+        for server in servers:
+            if server.status == "failed":
+                self._mcp_notice(f"MCP server {server.name} did not start: {server.error}")
+        try:
+            waiting = [c["name"] for c in mcp.configured(self.workspace.root) if not c["trusted"]]
+            for problem in mcp.problems(self.workspace.root):
+                self._mcp_notice(f"MCP: {problem}")
+        except Exception:  # noqa: BLE001
+            waiting = []
+        if waiting:
+            self._mcp_notice(f"This project's .mcp.json has servers that are not approved yet: {', '.join(waiting)}. "
+                             "Type /mcp to review and approve them.")
+        return servers
+
+    def _mcp_notice(self, text: str) -> None:
+        if text not in self._told_mcp:
+            self._told_mcp.add(text)
+            self._pending.append(("notice", {"text": text}))
+
     def _agent_for_cwd(self):
         # The system prompt names the working directory, the project's instruction file and
-        # whether plan mode is on, so the agent is rebuilt when one of them changes.
-        key = (self.workspace.root, self.workspace.mode == "plan")
+        # whether plan mode is on, so the agent is rebuilt when one of them changes; so do the
+        # MCP tools when a server starts, stops or changes its list.
+        from vesper import mcp
+
+        self.workspace.mcp_servers = self._mcp_servers()
+        ready = tuple((s.name, len(s.tools)) for s in self.workspace.mcp_servers if s.status == "ready")
+        key = (self.workspace.root, self.workspace.mode == "plan", ready, mcp.manager().version if ready else 0)
         if self._agent is None or self._agent_key != key:
             self._agent = build_coder(self._llm, self.workspace, self._middleware())
             self._agent_key = key

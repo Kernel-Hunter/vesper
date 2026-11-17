@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+import json
 import os
 import re
 import signal
@@ -49,7 +50,7 @@ MAX_SCAN_FILES = 50_000             # glob and grep stop walking after this many
 MAX_TASKS = 20
 
 READ_ONLY = {"list_files", "read_file", "glob", "grep"}          # same call, same answer
-CHANGES_THINGS = {"write_file", "edit_file", "run_command", "change_directory"}  # after these, read again
+CHANGES_THINGS = {"write_file", "edit_file", "run_command", "change_directory", "call_mcp"}  # after these, read again
 REPEATED = ("You already made this exact call in this turn and nothing has changed since. "
             "Use the result you have; do not call it again.")
 PLAN_REFUSAL = ("Plan mode is on: files are not changed and commands are not run yet. "
@@ -102,6 +103,7 @@ class Workspace:
     _running: list = field(default_factory=list, repr=False)  # stop functions of commands in progress
     waited: float = 0.0  # seconds spent waiting for the user to answer approvals
     stopped: bool = False  # the user stopped the turn: tools refuse to start until the next one
+    mcp_servers: list = field(default_factory=list, repr=False)  # MCP servers whose tools the agent gets
     _turn: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def __post_init__(self) -> None:
@@ -177,7 +179,8 @@ class Workspace:
 
     # ---------------------------------------------------------------- approval
     def _gate(self, kind: str, action: dict, strict: bool = False) -> None:
-        """kind: "edit" (write or edit a file), "run" (shell command) or "web" (fetch a page).
+        """kind: "edit" (write or edit a file), "run" (shell command), "web" (fetch a page) or "mcp"
+        (a tool of an MCP server).
 
         Raises ToolError if refused. `strict` actions (see the module docstring) ask whatever
         the mode, and "always" does not cover them.
@@ -188,12 +191,15 @@ class Workspace:
             rule = permissions.command_prefix(command)
         elif kind == "web":
             listed, rule = host in self.hosts, host
+        elif kind == "mcp":
+            rule = action["rule_name"]
+            listed = rule in self.rules
         else:
             listed, rule = "edit" in self.always, None
         if self.mode == "plan" and kind != "web" and not (kind == "run" and permissions.is_safe(command)):
             raise ToolError(PLAN_REFUSAL)
         action = {**action, "kind": kind, "strict": strict, "rule": None if strict else rule}
-        free = self.mode == "yolo" or listed or (self.mode == "auto-edit" and kind != "run")
+        free = self.mode == "yolo" or listed or (self.mode == "auto-edit" and kind in ("edit", "web"))
         if free and not strict:
             if self.on_auto is not None:
                 self.on_auto(action)
@@ -217,7 +223,7 @@ class Workspace:
         elif not rule:
             self.always.add(command)  # no safe rule for it: this exact command, this session
         else:
-            target, key = (self.rules, "allow_commands") if kind == "run" else (self.hosts, "allow_hosts")
+            target, key = (self.rules, "allow_commands") if kind in ("run", "mcp") else (self.hosts, "allow_hosts")
             if rule not in target:
                 target.append(rule)
                 if self.on_rule is not None:
@@ -573,6 +579,31 @@ class Workspace:
         for stop in list(self._running):
             stop()
 
+    # ---------------------------------------------------------------- MCP
+    def call_mcp(self, server: str, tool: str, args_json: str, step: str = "") -> str:
+        """Run a tool of an MCP server; asks first unless the server marks it read-only."""
+        from vesper import mcp
+
+        try:
+            s, t = mcp.lookup(self.mcp_servers, server, tool)
+            args = json.loads(args_json or "{}")
+        except mcp.MCPError as exc:
+            raise ToolError(str(exc)) from None
+        except ValueError:
+            raise ToolError("arguments must be a JSON object") from None
+        if not isinstance(args, dict):
+            raise ToolError("arguments must be a JSON object")
+        if not mcp.read_only(t):
+            shown = json.dumps(args, ensure_ascii=False, indent=1)
+            self._gate("mcp", {"tool": step or mcp.tool_name(server, tool), "server": server, "mcp_tool": tool,
+                               "rule_name": mcp.tool_name(server, tool),
+                               "command": f"{server} / {tool}",
+                               "args": shown if len(shown) <= 4000 else shown[:4000] + "\n…"})
+        try:
+            return s.call(tool, args)
+        except mcp.MCPError as exc:
+            raise ToolError(f"{server} / {tool}: {exc}") from None
+
     # ---------------------------------------------------------------- LangChain tools
     def tools(self) -> list:
         ws = self
@@ -653,8 +684,13 @@ class Workspace:
             """Search the web. Returns titles, addresses and snippets; read a result with web_fetch."""
             return safe(ws.web_search, query)
 
-        return [list_files, read_file, glob, grep, change_directory, write_file, edit_file,
-                run_command, update_tasks, web_fetch, web_search]
+        builtin = [list_files, read_file, glob, grep, change_directory, write_file, edit_file,
+                   run_command, update_tasks, web_fetch, web_search]
+        if not ws.mcp_servers:
+            return builtin
+        from vesper import mcp
+
+        return builtin + mcp.langchain_tools(ws.mcp_servers, lambda server, tool, args, step: safe(ws.call_mcp, server, tool, args, step))
 
 
 # -------------------------------------------------------------------- helpers

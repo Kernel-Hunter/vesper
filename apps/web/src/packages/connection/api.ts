@@ -25,7 +25,11 @@ export type Thinking = 'off' | 'low' | 'medium' | 'high'
 
 export interface ApprovalRequest {
   id: string
-  kind: 'edit' | 'run' | 'web'
+  kind: 'edit' | 'run' | 'web' | 'mcp'
+  /** MCP: which server and tool, and the arguments as indented JSON. */
+  server?: string
+  mcp_tool?: string
+  args?: string
   tool: string
   path?: string
   diff?: string
@@ -40,6 +44,24 @@ export interface ApprovalRequest {
 }
 
 export type ApprovalAnswer = 'yes' | 'always' | 'no'
+
+export interface McpServer {
+  name: string
+  scope: 'user' | 'project'
+  file: string
+  status: 'ready' | 'starting' | 'failed' | 'stopped' | 'needs approval' | 'not started'
+  error: string | null
+  tools: string[]
+  transport: 'stdio' | 'http'
+}
+
+export interface McpState {
+  servers: McpServer[]
+  problems: string[]
+  config_path: string
+  config: string
+  folder: string
+}
 
 export interface ServerState {
   providers: Provider[]
@@ -236,6 +258,9 @@ export const api = {
   /** Replaces the older turns of a chat with a summary. */
   compact: async (chatId: string, sessionId?: string): Promise<{ compacted: boolean; before: number; context: number; context_report?: ContextReport }> =>
     (await request(`/api/chats/${encodeURIComponent(chatId)}/compact`, { method: 'POST', json: { session_id: sessionId } })).json(),
+  mcp: async (): Promise<McpState> => (await request('/api/mcp')).json(),
+  mcpAction: async (action: 'approve' | 'restart' | 'config', body: { name?: string; text?: string } = {}): Promise<McpState> =>
+    (await request(`/api/mcp/${action}`, { method: 'POST', json: body })).json(),
   permissions: async (): Promise<Permissions> => (await request('/api/permissions')).json(),
   removePermission: async (kind: 'commands' | 'hosts', rule: string): Promise<Permissions> =>
     (await request('/api/permissions/remove', { method: 'POST', json: { kind, rule } })).json(),

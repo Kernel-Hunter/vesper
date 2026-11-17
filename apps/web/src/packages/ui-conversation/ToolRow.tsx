@@ -73,6 +73,7 @@ function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msg
   const waiting = !a.answer
   const always = a.kind === 'edit' ? { label: 'Always allow edits', title: 'Edit files without asking for the rest of this chat' }
     : a.kind === 'web' ? { label: `Always allow ${a.host ?? 'this site'}`, title: 'Read pages from this site without asking, from now on' }
+      : a.kind === 'mcp' ? { label: `Always allow ${a.mcp_tool ?? 'this tool'}`, title: `Use ${a.mcp_tool ?? 'this tool'} of ${a.server ?? 'this server'} without asking, from now on. Remove the rule in Settings.` }
       : a.rule ? { label: `Always allow ${a.rule}`, title: `Run commands that start with "${a.rule}" without asking, from now on. Remove the rule in Settings.` }
         : { label: 'Always allow this command', title: 'Run this exact command without asking for the rest of this chat' }
   return (
@@ -82,6 +83,13 @@ function Approval({ step, chatId, msgId }: { step: ToolStep; chatId: string; msg
           <>
             <div className="approval-title"><Icon name="globe" size={14} />Read a web page</div>
             <pre className="diff cmd">{a.url}</pre>
+          </>
+        )
+        : a.kind === 'mcp'
+        ? (
+          <>
+            <div className="approval-title"><Icon name="plug" size={14} />Use <code>{a.mcp_tool}</code><span className="dim"> from {a.server}</span></div>
+            {a.args && a.args !== '{}' ? <pre className="diff cmd">{a.args}</pre> : null}
           </>
         )
         : a.kind === 'run'

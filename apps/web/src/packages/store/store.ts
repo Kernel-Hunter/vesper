@@ -81,7 +81,7 @@ export interface Attachment {
   preview?: string
 }
 
-export type SettingsTab = 'agent' | 'models' | 'appearance'
+export type SettingsTab = 'agent' | 'models' | 'tools' | 'appearance'
 
 export interface Toast {
   id: number

@@ -98,6 +98,7 @@ SLASH = {
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
+    "/mcp": "MCP servers and their tools (/mcp approve [name], /mcp restart [name])",
     "/think": "how hard reasoning models think: off | low | medium | high",
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
@@ -242,6 +243,11 @@ class App:
             console.print(Panel(Text(action.get("url", ""), style="bold"), title="Read a web page", title_align="left",
                                 border_style=WARN, box=box.ROUNDED))
             always = f"always allow {rule}"
+        elif kind == "mcp":
+            body = Group(Text(f"{action.get('server')} / {action.get('mcp_tool')}", style="bold"),
+                         Text(action.get("args", ""), style=MUTED))
+            console.print(Panel(body, title="Use an MCP tool", title_align="left", border_style=WARN, box=box.ROUNDED))
+            always = f"always allow {action.get('mcp_tool')}"
         else:
             body = Group(Text("$ " + action.get("command", ""), style="bold"),
                          Text("in " + short_path(action.get("cwd", self.root)), style=MUTED))
@@ -601,6 +607,41 @@ class App:
         else:
             note("Nothing to summarize yet." if len(self.session.history) < 3 else "The model could not write a summary; nothing changed.", WARN)
 
+    def mcp(self, arg: str) -> None:
+        from vesper import mcp
+
+        root = str(self.workspace.root)
+        words = arg.split()
+        if words and words[0] == "approve":
+            names = mcp.approve(root, words[1] if len(words) > 1 else None)
+            if not names:
+                note("Nothing to approve: every server of this folder is approved already.", MUTED)
+                return
+            mcp.manager().for_root(root)
+            note(f"Approved: {', '.join(names)}. Starting; the tools are ready for your next message.", OK)
+            return
+        if words and words[0] == "restart":
+            mcp.manager().restart(root, words[1] if len(words) > 1 else None)
+            note("Restarting. The tools are ready for your next message.", OK)
+            return
+        rows = mcp.status(root)
+        t = Table(box=None, padding=(0, 2), show_header=False)
+        t.add_column(style="bold")
+        t.add_column()
+        t.add_column(style=MUTED)
+        colors = {"ready": OK, "failed": ERR, "needs approval": WARN}
+        for r in rows:
+            detail = f"{len(r['tools'])} tools" if r["status"] == "ready" else (r["error"] or "")
+            t.add_row(r["name"], Text(r["status"], style=colors.get(r["status"], MUTED)),
+                      f"{r['scope']} · {r['transport']} · {detail}".rstrip(" ·"))
+        if not rows:
+            t.add_row("", "No MCP servers yet.", "")
+        console.print(Panel(t, title="MCP servers", title_align="left", border_style=ACCENT, box=box.ROUNDED, expand=False))
+        for problem in mcp.problems(root):
+            note(problem, WARN)
+        note(f"Add servers in {short_path(str(mcp.user_config_path()))} or a project's .mcp.json "
+             "(the same format as other harnesses) · /mcp approve · /mcp restart")
+
     def permissions(self, arg: str) -> None:
         from vesper import permissions as perm
 
@@ -826,6 +867,8 @@ class App:
             self.compact()
         elif cmd == "/permissions":
             self.permissions(arg)
+        elif cmd == "/mcp":
+            self.mcp(arg)
         elif cmd == "/think":
             self.think(arg.lower())
         elif cmd == "/model":

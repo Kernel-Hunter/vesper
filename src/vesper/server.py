@@ -596,6 +596,9 @@ class Engine:
         for entry in entries:
             if entry["lock"].acquire(timeout=max(0.0, deadline - time.monotonic())):
                 entry["lock"].release()
+        from vesper import mcp
+
+        mcp.manager().close()  # the engine exits with os._exit, which skips atexit: stop the servers here
 
     def rewind_chat(self, chat_id: str, session_id: str | None, from_end: int, expect: str | None, files: bool,
                     turn: str | None = None) -> dict:
@@ -868,6 +871,55 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
 
         return {"commands": permissions.load_rules("allow_commands"), "hosts": permissions.load_rules("allow_hosts"),
                 "safe": list(permissions.SAFE_COMMANDS)}
+
+    def mcp_state():
+        from vesper import mcp
+
+        root = engine.settings["workspace"] or str(Path.home())
+        path = mcp.user_config_path()
+        try:
+            text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        except OSError:
+            text = ""
+        return {"servers": mcp.status(root), "problems": mcp.problems(root), "config_path": str(path),
+                "config": text, "folder": root}
+
+    @app.get("/api/mcp", dependencies=[Depends(auth)])
+    def get_mcp():
+        return mcp_state()
+
+    @app.post("/api/mcp/{action}", dependencies=[Depends(auth)])
+    async def change_mcp(action: str, request: Request):
+        from vesper import mcp
+
+        body = await json_body(request)
+        body = body if isinstance(body, dict) else {}
+        name = body.get("name")
+        if name is not None and (not isinstance(name, str) or not mcp.NAME.match(name)):
+            raise HTTPException(400, "Bad server name.")
+        root = engine.settings["workspace"] or str(Path.home())
+        if action == "approve":
+            await run_in_threadpool(mcp.approve, root, name)
+            await run_in_threadpool(mcp.manager().for_root, root)
+        elif action == "restart":
+            await run_in_threadpool(mcp.manager().restart, root, name)
+        elif action == "config":
+            text = body.get("text")
+            if not isinstance(text, str) or len(text) > 200_000:
+                raise HTTPException(400, "Send the file's text.")
+            try:
+                data = json.loads(text) if text.strip() else {"mcpServers": {}}
+            except ValueError as exc:
+                raise HTTPException(400, f"Not valid JSON: {exc}") from None
+            if not isinstance(data, dict) or not isinstance(data.get("mcpServers", {}), dict):
+                raise HTTPException(400, 'The file must be an object with "mcpServers": {name: {...}}.')
+            path = mcp.user_config_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            await run_in_threadpool(mcp.manager().restart, root, None)
+        else:
+            raise HTTPException(404, "Unknown action.")
+        return mcp_state()
 
     @app.post("/api/permissions/remove", dependencies=[Depends(auth)])
     async def remove_permission(request: Request):

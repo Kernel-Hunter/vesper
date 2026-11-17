@@ -119,6 +119,7 @@ command line and all tool output, where the normal view prints one summary line 
 | `/undo` | put files back to how they were before Vesper's last changes |
 | `/rewind` | go back to before one of your messages to change it; can also put files back |
 | `/compact` | replace the older part of the conversation with a summary to free context |
+| `/mcp` | MCP servers, their status and tools; `/mcp approve`, `/mcp restart` |
 | `/permissions` | list the commands and web sites that run without asking; remove one |
 | `/think` | how hard reasoning models think: `off`, `low`, `medium`, `high` |
 | `/model`, `/key` | switch provider and model, set the API key |
@@ -160,6 +161,34 @@ text with headings, lists, tables, slides and sheets kept, using only the Python
 library. Old Word `.doc` files are converted with macOS's `textutil`. Old `.xls` and `.ppt`
 files and Apple iWork files need to be saved in a newer format first; Vesper says so
 instead of guessing. Long documents are read a page at a time, like long code files.
+
+### MCP servers
+
+Vesper uses tools from [MCP](https://modelcontextprotocol.io) servers: GitHub, databases,
+browsers, documentation sites and hundreds more. List yours in `~/.vesper/mcp.json` (or in
+Settings, Tools in the desktop app). A project can bring its own in a `.mcp.json` file, in
+the same format Claude Code, Cursor and others use:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "docs": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
+  }
+}
+```
+
+`${NAME}` is read from your environment or `~/.vesper/.env`, so keys stay out of the file.
+A project's servers start programs on your computer, so each one waits for your approval
+(`/mcp approve`); if someone changes its definition, it asks again. Tools that the server
+marks read-only run freely; the rest ask first, like commands, and "always allow" saves a
+rule for that one tool. When the servers offer many tools, the model gets two small tools
+(`mcp_find` and `mcp_call`) instead of every schema, which keeps each request small.
+`/mcp` shows the servers and their tools; `/mcp restart` restarts them.
 
 ### The web
 
@@ -405,6 +434,10 @@ npm --prefix apps/web run dev               # open http://localhost:5173/#token=
 
 Releases: push a tag such as `v0.9.3` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
+
+## Roadmap
+
+What comes next, ranked, is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Contributing
 
