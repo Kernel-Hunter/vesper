@@ -3,7 +3,7 @@ import { compactChat, currentBusy, currentChat, folderName, isDesktop, openFolde
 import { Icon } from '../ui-primitives/Icon'
 import { formatCost } from '../ui-model-selection/catalog'
 import { percent, tokenCount } from './context'
-import { conversationChanges } from './changes'
+import { changeStats, conversationChanges } from './changes'
 
 /** Conversation-specific environment and edits observed through Vesper's file tools. */
 export function Environment({ onClose }: { onClose: () => void }) {
@@ -13,7 +13,7 @@ export function Environment({ onClose }: { onClose: () => void }) {
   const workspace = useStore(s => currentChat(s)?.cwd ?? s.server?.settings.workspace ?? '') || home
   const desktop = isDesktop()
   const [contextDetails, setContextDetails] = useState(() => {
-    try { return localStorage.getItem('vesper.contextDetails') !== '0' } catch { return true }
+    try { return localStorage.getItem('vesper.contextDetails') === '1' } catch { return false }
   })
   const toggleContextDetails = (): void => {
     const next = !contextDetails
@@ -21,6 +21,7 @@ export function Environment({ onClose }: { onClose: () => void }) {
     try { localStorage.setItem('vesper.contextDetails', next ? '1' : '0') } catch { /* storage is optional */ }
   }
   const changes = useMemo(() => conversationChanges(chat?.messages ?? []), [chat?.messages])
+  const stats = useMemo(() => changeStats(chat?.messages ?? []), [chat?.messages])
   const usage = chat?.lastUsage
   const chatCost = useMemo(() => {
     const costs = (chat?.messages ?? []).map(m => m.usage?.cost).filter((c): c is number => typeof c === 'number')
@@ -48,11 +49,14 @@ export function Environment({ onClose }: { onClose: () => void }) {
     <div className="env-section">
       <div className="env-label">Context <span>{report && percent(report.used, report.window)}</span></div>
       {report ? <>
-        {contextDetails && <div className="context-total" title={`${report.used.toLocaleString()} estimated tokens`}>~{tokenCount(report.used)} <small>of {tokenCount(report.window)} tokens</small></div>}
         <div className="context-meter" role="progressbar" aria-label="Estimated context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round(report.used / report.window * 100))}>
           <span style={{ width: `${Math.min(100, report.used / report.window * 100)}%` }} />
         </div>
-        <button type="button" className="context-details-toggle" aria-expanded={contextDetails} onClick={toggleContextDetails}>{contextDetails ? 'Show less' : 'Show details'}</button>
+        <div className="context-line">
+          <span title={`${report.used.toLocaleString()} estimated tokens`}>~{tokenCount(report.used)} of {tokenCount(report.window)}</span>
+          {chatCost !== null && <span title="This chat at list prices; cached input is often cheaper">{formatCost(chatCost)}</span>}
+          <button type="button" className="context-details-toggle" aria-expanded={contextDetails} onClick={toggleContextDetails}>{contextDetails ? 'Less' : 'Details'}</button>
+        </div>
         {contextDetails && <>
         <p className="env-note">{report.model || 'Model'} · {report.window_source === 'documented' ? 'documented window' : report.window_source === 'requested' ? 'requested window; actual limit may differ' : 'assumed window; actual limit unknown'}</p>
         <div className="context-heading">Estimated composition</div>
@@ -71,7 +75,6 @@ export function Environment({ onClose }: { onClose: () => void }) {
         <dl className="context-list">
           <div><dt>Input</dt><dd title={`${usage.input.toLocaleString()} tokens`}>{usage.estimated ? '~' : ''}{tokenCount(usage.input)}</dd></div>
           <div><dt>Output</dt><dd title={`${usage.output.toLocaleString()} tokens`}>{usage.estimated ? '~' : ''}{tokenCount(usage.output)}</dd></div>
-          {chatCost !== null && <div><dt>Cost <small>(this chat, list prices)</small></dt><dd title="Cached input is often cheaper, so the real cost can be lower">{formatCost(chatCost)}</dd></div>}
           <div><dt>Cache read <small>(included in input)</small></dt><dd title={`${(usage.cached ?? 0).toLocaleString()} tokens`}>{tokenCount(usage.cached ?? 0)}</dd></div>
         </dl>
         {usage.last_call && <p className="env-note">Last model call: {usage.last_call.estimated ? '~' : ''}{tokenCount(usage.last_call.input)} input + {usage.last_call.estimated ? '~' : ''}{tokenCount(usage.last_call.output)} output. Turn input includes repeated context across calls.</p>}
@@ -80,9 +83,9 @@ export function Environment({ onClose }: { onClose: () => void }) {
     <div className="env-section env-changes">
       <div className="env-label">Changes {changes.length > 0 && <span>{changes.length}</span>}</div>
       {changes.length ? <ul>{changes.map(([path, action]) => <li key={path} title={path}>
-        <Icon name="doc" size={14} /><span>{path}</span><small>{action}</small>
-      </li>)}</ul> : <p className="env-detail">No file edits in this conversation yet.</p>}
-      <p className="env-note">Shows successful edits made by Vesper’s file tools in this conversation. Shell commands and edits made outside Vesper are not tracked.</p>
+        <Icon name="doc" size={14} /><span>{path.split('/').pop()}</span>
+        {stats.get(path) ? <small><span className="stat-add">+{stats.get(path)!.add}</span> <span className="stat-del">−{stats.get(path)!.del}</span></small> : <small>{action}</small>}
+      </li>)}</ul> : <p className="env-detail">No file edits yet.</p>}
     </div>
   </aside>
 }

@@ -16,7 +16,10 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Cost of each answer** (0.10.1) at list prices, and the chat's total.
 - **Custom commands and skills** (0.10.1), in the `.claude/commands` and `SKILL.md` formats.
 - **Notifications** (0.10.1) when an answer ends or waits for approval in the background.
-- **JSON mode** (0.10.2): `vesper --json "task"` streams events for scripts and CI.
+- **JSON mode** (0.11.0): `vesper --json "task"` streams events for scripts and CI.
+- **Quiet conversation view** (0.11.0): tool calls in a row fold into one line ("Read 3 files,
+  edited a file +12 −3") that opens to show each step, a slimmer message box, and lines
+  added and removed per file in the Environment panel.
 - **Background commands** (0.10.1): dev servers and watchers keep running; the agent reads
   their new output and stops them.
 

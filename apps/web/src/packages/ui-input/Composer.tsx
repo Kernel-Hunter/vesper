@@ -186,7 +186,7 @@ export function Composer() {
           onChange={e => setText(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
-          placeholder={streaming ? 'Type the next message: it is sent when this answer ends' : theme === 'terminal' ? 'task --here' : 'Ask Vesper to build, fix, explain or run something · / for commands'}
+          placeholder={streaming ? 'Type the next message: it is sent when this answer ends' : theme === 'terminal' ? 'task --here' : 'Ask Vesper anything · / for commands, @ for files'}
           aria-label="Message"
           spellCheck
         />
@@ -209,29 +209,28 @@ export function Composer() {
               aria-haspopup="menu" aria-expanded={adding} aria-label="Add files, a folder or images" title="Add files, a folder or images">
               <Icon name="plus" size={17} />
             </button>
-            <button type="button" className="chip-btn" onClick={() => setPicker(p => !p)} aria-haspopup="dialog" aria-expanded={picker}>
-              <Icon name="bolt" size={14} />
-              <span className="chip-label">{provider ? `${provider.label} · ${model}` : 'Choose model'}</span>
-              <Icon name="chevron" size={13} />
+            <button type="button" className="chip-btn" onClick={() => setPicker(p => !p)} aria-haspopup="dialog" aria-expanded={picker}
+              title={provider ? `${provider.label} · ${model}. Click to change.` : 'Choose a model'}>
+              <span className="chip-label">{provider ? model.split('/').pop() : 'Choose model'}</span>
+              <Icon name="chevron" size={12} />
             </button>
-            <label className="effort-control" title={`${effortLabel[effort]}. ${effort === 'unknown' ? 'You can try a level, but the provider may reject or ignore it.' : effort === 'unavailable' ? 'This model or adapter does not expose adjustable levels in Vesper.' : 'Changes the global setting for future requests.'}`}>
-              <span>Effort{effort === 'unknown' ? ' ?' : ''}</span>
-              <select aria-label={`Reasoning effort: ${effortLabel[effort]}`} value={effort === 'unavailable' ? 'unavailable' : settings?.thinking ?? 'off'}
-                disabled={!settings || streaming || effort === 'unavailable'}
+            {effort !== 'unavailable' && <label className="effort-control" title={`${effortLabel[effort]}. ${effort === 'unknown' ? 'You can try a level, but the provider may reject or ignore it.' : 'Changes the global setting for future requests.'}`}>
+              <Icon name="spark" size={13} />
+              <select aria-label={`Reasoning effort: ${effortLabel[effort]}`} value={settings?.thinking ?? 'off'}
+                disabled={!settings || streaming}
                 onChange={e => void saveSettings({ thinking: e.target.value as Thinking })}>
-                {effort === 'unavailable' && <option value="unavailable">N/A</option>}
-                <option value="off">Default</option><option value="low">Low</option>
+                <option value="off">Default effort</option><option value="low">Low</option>
                 <option value="medium">Medium</option><option value="high">High</option>
               </select>
-            </label>
+            </label>}
             <button type="button" className={`chip-btn${mode === 'yolo' ? ' warn' : ''}`} onClick={() => openSettings('agent')} title="What Vesper may do without asking">
-              <Icon name={mode === 'yolo' ? 'warn' : 'shield'} size={14} />
+              <Icon name={mode === 'yolo' ? 'warn' : 'shield'} size={13} />
               <span className="chip-label">{MODE_LABEL[mode]}</span>
             </button>
             <button type="button" className={`chip-btn toggle${mode === 'plan' ? ' on' : ''}`} onClick={() => void togglePlan()}
               aria-pressed={mode === 'plan'} disabled={streaming}
               title="Plan mode: Vesper reads and proposes a plan, and changes nothing until you approve it">
-              <Icon name="list" size={14} /> Plan
+              <Icon name="list" size={13} /> Plan
             </button>
           </div>
           <div className="composer-right">
@@ -259,7 +258,6 @@ export function Composer() {
         {picker && <ModelPicker onClose={() => setPicker(false)} />}
         {adding && <AddMenu onClose={() => setAdding(false)} />}
       </form>
-      <p className="hint">Vesper can make mistakes. Read each change before you allow it.</p>
     </div>
   )
 }

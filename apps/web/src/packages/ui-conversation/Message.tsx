@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { Task } from '../connection/api'
 import type { Msg, Thought } from '../store/store'
 import { retry, rewindTo, runPlan, toast, undoChanges, useStore } from '../store/store'
-import { TOOL_VERBS, ToolRow } from './ToolRow'
+import { TOOL_VERBS, ToolGroup, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
 import { renderMarkdown } from './markdown'
@@ -137,7 +137,7 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
   // Text, thinking and tool calls in the order they happened.
   const parts = useMemo(() => {
     type Part = { kind: 'text'; html: string; key: string } | { kind: 'tool'; index: number; key: string }
-      | { kind: 'thought'; index: number; key: string }
+      | { kind: 'thought'; index: number; key: string } | { kind: 'group'; indexes: number[]; key: string }
     const out: Part[] = []
     let from = 0
     const steps = [
@@ -151,12 +151,23 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
       from = at
     }
     if (msg.text.slice(from).trim()) out.push({ kind: 'text', html: renderMarkdown(msg.text.slice(from)), key: `x${from}` })
-    return out
+    // Steps in a row fold into one line; a step that waits for approval stays on its own.
+    const folded: Part[] = []
+    for (const p of out) {
+      const prev = folded[folded.length - 1]
+      const lone = p.kind === 'tool' && !!msg.tools[p.index]!.approval
+      if (p.kind === 'tool' && !lone && prev?.kind === 'tool' && !msg.tools[prev.index]!.approval) {
+        folded[folded.length - 1] = { kind: 'group', indexes: [prev.index, p.index], key: prev.key }
+      } else if (p.kind === 'tool' && !lone && prev?.kind === 'group') {
+        prev.indexes.push(p.index)
+      } else folded.push(p)
+    }
+    return folded
   }, [msg.text, msg.tools, msg.thoughts])
   const lastText = parts.map(p => p.kind).lastIndexOf('text')
   const running = msg.tools.some(t => t.output === undefined)
   const lastKind = parts[parts.length - 1]?.kind
-  const thinking = msg.streaming && !msg.error && !running && (parts.length === 0 || lastKind === 'tool' || !!msg.draft)
+  const thinking = msg.streaming && !msg.error && !running && (parts.length === 0 || lastKind === 'tool' || lastKind === 'group' || !!msg.draft)
 
   const copy = (): void => {
     void navigator.clipboard.writeText(msg.text).then(() => toast('Copied'), () => toast('Copy failed', 'error'))
@@ -166,7 +177,9 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
     <div className="msg bot">
       <div className="avatar" aria-hidden="true"><LogoMark size={22} /></div>
       <div className="body">
-        {parts.map((p, i) => (p.kind === 'tool'
+        {parts.map((p, i) => (p.kind === 'group'
+          ? <ToolGroup key={p.key} steps={p.indexes.map(n => msg.tools[n]!)} chatId={chatId} msgId={msg.id} expanded={transcript} />
+          : p.kind === 'tool'
           ? <ToolRow key={p.key} step={msg.tools[p.index]!} chatId={chatId} msgId={msg.id} expanded={transcript} />
           : p.kind === 'thought'
             ? (

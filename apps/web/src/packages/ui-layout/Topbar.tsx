@@ -33,13 +33,13 @@ export function Topbar({ environment, onToggleEnvironment }: { environment: bool
         {!connected && (
           <button type="button" className="status err" onClick={() => void refresh()}><span className="pulse" />Engine offline · retry</button>
         )}
-        <button type="button" className={`status view${transcript ? ' ok' : ''}`} onClick={toggleTranscript} aria-pressed={transcript}
-          title={`Transcript view: show thinking, commands, edits and output in full (${mac ? '⌘' : 'Ctrl+'}O)`}>
-          <Icon name={transcript ? 'eye' : 'eyeOff'} size={13} />Transcript
-        </button>
         <button type="button" className={`status folder${workspace ? ' ok' : ''}`} onClick={() => void pickFolder()}
           title={`${where || 'Choose a working folder'}\nClick to work in another folder`}>
-          <Icon name={workspace ? 'folder' : 'home'} size={13} />{workspace ? folderName(workspace) : 'Home folder'}
+          <Icon name={workspace ? 'folder' : 'home'} size={14} />{workspace ? folderName(workspace) : 'Home folder'}
+        </button>
+        <button type="button" className={`icon-btn sm top-icon${transcript ? ' on' : ''}`} onClick={toggleTranscript} aria-pressed={transcript}
+          aria-label="Transcript view" title={`Transcript view: show thinking, commands, edits and output in full (${mac ? '⌘' : 'Ctrl+'}O)`}>
+          <Icon name="list" size={17} />
         </button>
         {row && <button type="button" className="icon-btn sm top-options" aria-label="Conversation options" aria-haspopup="menu"
           onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ x: r.left - 190, y: r.bottom }) }}>•••</button>}
