@@ -252,6 +252,10 @@ class Store:
         with self._lock, self._db:
             self._db.execute("DELETE FROM checkpoints WHERE session_id = ? AND turn >= ?", (session_id, int(turn)))
 
+    def delete_checkpoints_for_path(self, session_id: str, path: str | Path) -> None:
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM checkpoints WHERE session_id = ? AND path = ?", (session_id, str(path)))
+
     def delete_checkpoints(self, session_id: str, turn: int) -> None:
         with self._lock, self._db:
             self._db.execute("DELETE FROM checkpoints WHERE session_id = ? AND turn = ?", (session_id, int(turn)))

@@ -672,6 +672,21 @@ class Engine:
         finally:
             entry["lock"].release()
 
+    def chat_changes(self, chat_id: str, session_id: str | None = None) -> list[dict]:
+        """Files a chat changed, with diffs. Read-only, so it also works while the chat answers."""
+        with self._sessions_lock:
+            entry = self._folder_session(chat_id, [], session_id)
+        return entry["session"].changes()
+
+    def revert_chat_file(self, chat_id: str, path: str, session_id: str | None = None) -> bool:
+        entry, session = self._idle_session(chat_id, session_id)
+        try:
+            return session.revert_file(path)
+        except OSError as exc:
+            raise HTTPException(500, f"Could not put the file back: {exc}") from exc
+        finally:
+            entry["lock"].release()
+
     def compact_chat(self, chat_id: str, session_id: str | None = None) -> dict:
         """Summarize the older turns of a chat to free context."""
         entry, session = self._idle_session(chat_id, session_id)
@@ -874,6 +889,27 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
     async def undo(request: Request, chat_id: str):
         session_id = await chat_ref(request, chat_id)
         return {"paths": await run_in_threadpool(engine.undo_chat, chat_id, session_id)}
+
+    @app.get("/api/chats/{chat_id}/changes", dependencies=[Depends(auth)])
+    def chat_changes(chat_id: str, session_id: str = ""):
+        if not CHAT_ID.match(chat_id) or (session_id and not SESSION_ID.match(session_id)):
+            raise HTTPException(400, "Bad chat or session id.")
+        if not engine.settings["workspace"]:
+            return {"files": []}
+        return {"files": engine.chat_changes(chat_id, session_id or None)}
+
+    @app.post("/api/chats/{chat_id}/changes/revert", dependencies=[Depends(auth)])
+    async def revert_file(request: Request, chat_id: str):
+        body = await json_body(request)
+        session_id = body.get("session_id") if isinstance(body, dict) else None
+        path = body.get("path") if isinstance(body, dict) else None
+        if not CHAT_ID.match(chat_id) or (session_id is not None and not (isinstance(session_id, str) and SESSION_ID.match(session_id))):
+            raise HTTPException(400, "Bad chat or session id.")
+        if not isinstance(path, str) or not path:
+            raise HTTPException(400, "Send the path of the file to put back.")
+        if not await run_in_threadpool(engine.revert_chat_file, chat_id, path, session_id):
+            raise HTTPException(404, "Vesper has no copy of that file from this conversation.")
+        return {"ok": True}
 
     @app.post("/api/chats/{chat_id}/compact", dependencies=[Depends(auth)])
     async def compact(request: Request, chat_id: str):

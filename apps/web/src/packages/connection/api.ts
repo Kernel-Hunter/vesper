@@ -147,6 +147,7 @@ export interface Usage {
   last_call?: { input: number; output: number; estimated: boolean } | null
 }
 
+export interface ChangedFile { path: string; status: 'added' | 'modified' | 'deleted'; add: number; del: number; diff: string; binary: boolean }
 export interface CheckState { folder: string; command: string; suggestion: string }
 
 export type StreamEvent =
@@ -271,6 +272,12 @@ export const api = {
     (await request(`/api/chats/${encodeURIComponent(chatId)}/rewind`, {
       method: 'POST', json: { session_id: sessionId, from_end: fromEnd, text, files, turn },
     })).json(),
+  /** Every file a chat changed, with a diff against what it held before (the review pane). */
+  changes: async (chatId: string, sessionId?: string): Promise<ChangedFile[]> =>
+    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/changes${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`)).json()) as { files: ChangedFile[] }).files,
+  revertFile: async (chatId: string, path: string, sessionId?: string): Promise<void> => {
+    await request(`/api/chats/${encodeURIComponent(chatId)}/changes/revert`, { method: 'POST', json: { path, session_id: sessionId } })
+  },
   /** Puts back the files the agent's latest edits changed. */
   undo: async (chatId: string, sessionId?: string): Promise<string[]> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[] }).paths,

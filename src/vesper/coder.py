@@ -768,6 +768,72 @@ class Session:
         self._log("undo", detail={"paths": paths})
         return paths
 
+    def _baselines(self) -> dict[str, bytes | None]:
+        """{path: what it held before this chat first changed it}, as far as undo copies go back."""
+        rows = self._copies
+        if self.store is not None and self._saved:
+            rows = self.store.checkpoints_since(self.id, 0)
+        first: dict[str, tuple[int, bytes | None]] = {}
+        for turn, path, before in rows:
+            if path not in first or turn < first[path][0]:
+                first[path] = (turn, before)
+        return {path: before for path, (_turn, before) in first.items()}
+
+    def changes(self, max_diff: int = 200_000) -> list[dict]:
+        """Files this chat changed, each compared with what it held before: for the review pane.
+
+        [{"path", "status": "added" | "modified" | "deleted", "add", "del", "diff", "binary"}]
+        """
+        import difflib
+
+        out = []
+        for path, before in sorted(self._baselines().items()):
+            target = Path(path)
+            try:
+                now = target.read_bytes() if target.is_file() else None
+            except OSError:
+                continue
+            if now == before:
+                continue
+            status = "added" if before is None else "deleted" if now is None else "modified"
+            item = {"path": path, "status": status, "add": 0, "del": 0, "diff": "", "binary": False}
+            try:
+                old = (before or b"").decode("utf-8")
+                new = (now or b"").decode("utf-8")
+                if "\x00" in old or "\x00" in new:
+                    raise UnicodeDecodeError("utf-8", b"", 0, 1, "binary")
+            except UnicodeDecodeError:
+                item["binary"] = True
+                out.append(item)
+                continue
+            lines = list(difflib.unified_diff(old.splitlines(), new.splitlines(), f"a/{target.name}", f"b/{target.name}",
+                                              lineterm="", n=3))
+            item["add"] = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+            item["del"] = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+            diff = "\n".join(lines)
+            item["diff"] = diff if len(diff) <= max_diff else diff[:max_diff] + "\n... (diff cut: the file changed a lot)"
+            out.append(item)
+        return out
+
+    def revert_file(self, path: str) -> bool:
+        """Put one file back to how it was before this chat changed it. False when it is not one of them."""
+        baselines = self._baselines()
+        if path not in baselines:
+            return False
+        before, target = baselines[path], Path(path)
+        if before is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(before)
+        self._copies = [r for r in self._copies if r[1] != path]
+        if self.store is not None and self._saved:
+            self.store.delete_checkpoints_for_path(self.id, path)
+        self.workspace._seen.clear()
+        self._undone.append(path)
+        self._log("undo", detail={"paths": [path], "file": True})
+        return True
+
     def _on_cwd(self, path) -> None:
         self._pending.append(("cwd", {"path": str(path)}))
         self._log("cwd", detail={"path": str(path)})

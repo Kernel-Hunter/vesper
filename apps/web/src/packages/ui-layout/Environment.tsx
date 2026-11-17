@@ -124,6 +124,9 @@ export function Environment({ onClose }: { onClose: () => void }) {
         <Icon name="doc" size={14} /><span>{path.split('/').pop()}</span>
         {stats.get(path) ? <small><span className="stat-add">+{stats.get(path)!.add}</span> <span className="stat-del">−{stats.get(path)!.del}</span></small> : <small>{action}</small>}
       </li>)}</ul> : <p className="env-detail">No file edits yet.</p>}
+      {changes.length > 0 && <div className="env-links env-review">
+        <button type="button" onClick={() => window.dispatchEvent(new Event('vesper:review'))}>Review changes</button>
+      </div>}
     </div>
   </aside>
 }

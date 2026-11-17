@@ -24,3 +24,23 @@ export function argsDiff(step: ToolStep): string {
   return ''
 }
 
+export interface DiffRow { kind: 'hunk' | 'add' | 'del' | 'ctx'; text: string; old?: number; now?: number }
+
+/** Unified diff text as rows with old and new line numbers (file headers dropped). */
+export function diffRows(diff: string): DiffRow[] {
+  const rows: DiffRow[] = []
+  let old = 0
+  let now = 0
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('---') || line.startsWith('+++')) continue
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line)
+    if (hunk) {
+      old = Number(hunk[1])
+      now = Number(hunk[2])
+      rows.push({ kind: 'hunk', text: line })
+    } else if (line.startsWith('+')) rows.push({ kind: 'add', text: line.slice(1), now: now++ })
+    else if (line.startsWith('-')) rows.push({ kind: 'del', text: line.slice(1), old: old++ })
+    else if (line.startsWith(' ')) rows.push({ kind: 'ctx', text: line.slice(1), old: old++, now: now++ })
+  }
+  return rows
+}

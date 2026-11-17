@@ -7,12 +7,14 @@ import { Composer } from './packages/ui-input/Composer'
 import { Sidebar } from './packages/ui-layout/Sidebar'
 import { Topbar } from './packages/ui-layout/Topbar'
 import { Environment } from './packages/ui-layout/Environment'
+import { Review } from './packages/ui-layout/Review'
 import { Thread } from './packages/ui-conversation/Thread'
 import { Settings } from './packages/ui-settings/Settings'
 import { Icon } from './packages/ui-primitives/Icon'
 import { Toasts } from './packages/ui-primitives/Toasts'
 
 import './packages/ui-layout/layout.css'
+import './packages/ui-layout/review.css'
 import './packages/ui-conversation/conversation.css'
 import './packages/ui-input/input.css'
 import './packages/ui-model-selection/model.css'
@@ -28,7 +30,14 @@ export function App() {
     try { localStorage.setItem('vesper.environment', open ? '0' : '1') } catch { /* private mode */ }
     return !open
   })
+  const [review, setReview] = useState(false)
   const depth = useRef(0)
+
+  useEffect(() => {
+    const open = (): void => setReview(true)
+    window.addEventListener('vesper:review', open)
+    return () => window.removeEventListener('vesper:review', open)
+  }, [])
 
   useEffect(() => {
     const url = new URL(window.location.href)
@@ -54,6 +63,7 @@ export function App() {
         if (!getState().sidebar) toggleSidebar()
         requestAnimationFrame(() => (document.querySelector('.side-search input') as HTMLInputElement | null)?.focus())
       }
+      else if (mod && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); setReview(open => !open) }
       else if (e.key === 'Escape' && currentBusy(getState()) && !getState().settings.open) stop()
     }
     window.addEventListener('keydown', onKey)
@@ -99,6 +109,7 @@ export function App() {
         </main>
         {environment && <Environment onClose={toggleEnvironment} />}
       </div>
+      {review && <Review onClose={() => setReview(false)} />}
       <Settings />
       {dragging && (
         <div className="drop-overlay"><div><Icon name="paperclip" size={34} />Drop to attach to your message</div></div>

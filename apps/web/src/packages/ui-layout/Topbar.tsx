@@ -41,6 +41,10 @@ export function Topbar({ environment, onToggleEnvironment }: { environment: bool
           aria-label="Transcript view" title={`Transcript view: show thinking, commands, edits and output in full (${mac ? '⌘' : 'Ctrl+'}O)`}>
           <Icon name="list" size={17} />
         </button>
+        <button type="button" className="icon-btn sm top-icon" onClick={() => window.dispatchEvent(new Event('vesper:review'))}
+          aria-label="Review changes" title={`Review changes: every file this chat edited, line by line (${mac ? '⇧⌘' : 'Ctrl+Shift+'}D)`}>
+          <Icon name="code" size={17} />
+        </button>
         {row && <button type="button" className="icon-btn sm top-options" aria-label="Conversation options" aria-haspopup="menu"
           onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ x: r.left - 190, y: r.bottom }) }}>•••</button>}
         <button type="button" className={`icon-btn sm env-toggle${environment ? ' on' : ''}`} onClick={onToggleEnvironment}

@@ -15,6 +15,8 @@ Amp, Warp, GitHub Copilot and Continue.
   joins it before the agent's next step; one that arrives too late goes out when it ends.
 - **Test and lint loop** (0.14.0): `/check pytest -q` runs after the agent's edits; failures go
   back to it until they pass or three tries are used.
+- **Review pane** (0.15.0): every file the chat changed with its diff against the first copy,
+  comments on a line that go into the next message, and revert per file.
 - **Cost of each answer** (0.10.1) at list prices, and the chat's total.
 - **Custom commands and skills** (0.10.1), in the `.claude/commands` and `SKILL.md` formats.
 - **Notifications** (0.10.1) when an answer ends or waits for approval in the background.
@@ -31,11 +33,9 @@ Amp, Warp, GitHub Copilot and Continue.
 
 1. **Small-model routing.** Titles, summaries and searches on a cheap model.
 2. **Git safety net.** A commit per turn on request, and a worktree per parallel chat.
-3. **Diff review pane.** Every change of a turn file by file, accept or reject per hunk, and
-    comments on a line that go back to the agent.
-4. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
+3. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
     gopls) go back to the agent right away.
-5. **Subagents.** A child agent with its own context for searches and side tasks.
+4. **Subagents.** A child agent with its own context for searches and side tasks.
 
 Later: hooks, memory across sessions, a browser tool, an ACP server for editors, session
 export and sharing, a checkpoint timeline, symbol and URL mentions, keybindings and a vim

@@ -333,6 +333,13 @@ You can keep typing while it works. A message sent during an answer joins it bef
 agent's next step, so "also update the tests" or "use the other folder" changes the work in
 progress without stopping it. If the answer ends first, the message is sent as the next one.
 
+The Review button in the top bar (`Shift+Cmd+D` or `Ctrl+Shift+D`) lists every file the
+conversation changed, each compared with what it held before the conversation first touched
+it. Click a file for its diff with line numbers. Hover a line and click `+` to write a
+comment; "Add to message" puts it in the message box as "In app.py at line 12: ...", so you
+can collect a few and send them together. Revert file puts one file back as it was and tells
+the agent about it with your next message.
+
 Hover over one of your own messages for Copy, Edit and Rewind. Edit lets you change the text
 and send it again; Rewind goes back to before that message and puts its text in the message
 box. Both forget that message and everything after it, and both can also put back the files
@@ -485,7 +492,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.14.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.15.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap
