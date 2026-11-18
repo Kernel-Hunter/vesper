@@ -26,7 +26,7 @@ conversation in SQLite, and keeps a log of what it did. The agent loop is LangCh
 - `src/vesper/documents.py`: turns Word, PowerPoint, Excel, OpenDocument, EPUB and RTF files into text for `read_file`, with the standard library only and size caps against zip bombs.
 - `src/vesper/store.py`: `Store`, the SQLite database at `~/.vesper/vesper.db` (tables `sessions`, `messages`, `events`, `checkpoints`).
 - `src/vesper/tui.py`: the `vesper` terminal app: session loop, slash commands, one-shot mode, `vesper sessions`, `vesper logs`. The agent runs in a worker thread; the main thread draws and asks.
-- `src/vesper/ui.py`: how the terminal app looks (colors, banner, tool lines, streaming Markdown, session and log tables). No model or file access.
+- `src/vesper/ui.py`: how the terminal app looks (banner, tool lines, diffs, streaming Markdown, session and log tables). No model or file access. Colors come from `src/vesper/themes.py`; `ui.apply_theme` rebinds the color names (`ACCENT`, `MUTED`, ...) in `ui`, `tui` and `onboarding` at once, so code reads them at call time and never as default arguments. Config key `theme`, `/theme`.
 - `src/vesper/onboarding.py`: `config.json`, the model and key pickers, the first-run and trust prompts.
 - `src/vesper/providers.py`: picks the chat model, lists every model a key can use with prices, free models and tool support (`model_catalog`), and re-reads `~/.vesper/.env` when another Vesper process changes it, so keys are shared by the terminal and the desktop app. The only place that imports a provider package.
 - `src/vesper/attachments.py`: files, folders and images attached to one message (`@path` in the terminal, `+`, drop or paste in the app). Images go to the model once and are replaced by a short note afterwards.

@@ -258,6 +258,16 @@ order. In the app you can move models up or down and remove them; "Reset to auto
 order" goes back. A model that failed waits ten minutes after a rate limit and six hours
 after running out of credits before Vesper tries it again.
 
+### Themes
+
+The terminal comes in eight color themes, named after the desktop app's: Dusk (the
+default), Graphite, Carbon, Ember, Ocean, Forest, Rosewood and Daylight for light
+terminals. `/theme` shows each one in its own colors; `/theme ocean` switches at once and
+keeps the choice for next time. If your terminal reports a light background through
+`COLORFGBG`, Vesper starts in Daylight. The status bar under the prompt shows the model,
+the mode, how full the context is, the folder and the git branch, and drops the less
+important parts when the window is narrow.
+
 ### Token use
 
 Vesper is built to spend few tokens per step:
@@ -525,7 +535,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.19.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.20.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

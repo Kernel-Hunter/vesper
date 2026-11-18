@@ -614,7 +614,7 @@ def test_terminal_draws_the_task_list(app, capsys):
     app.draw("tool_end", {"id": "t", "name": "update_tasks", "output": "Task list saved", "ok": True, "ms": 1})
     app.renderer.stop()
     out = capsys.readouterr().out
-    assert "✔ read" in out and "▸ fix" in out and "☐ test" in out and "Task list saved" not in out
+    assert "✓ read" in out and "◆ fix" in out and "◇ test" in out and "Task list saved" not in out
 
 
 # ---------------------------------------------------------------- the desktop engine

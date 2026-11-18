@@ -50,19 +50,29 @@ from vesper.onboarding import (
 from vesper.ui import (
     ACCENT,
     ACCENT_2,
+    ACCENT_3,
     AUTO_DIFF_LINES,
     ERR,
+    FAINT,
     MODES,
     MUTED,
     OK,
     TOOL_LABELS,
+    TEXT,
     WARN,
     Renderer,
+    apply_theme,
     banner,
     console,
     diff_panel,
     err_console,
     error_panel,
+    blend,
+    meter_parts,
+    mode_color,
+    git_branch,
+    gradient,
+    theme_swatch,
     fmt_cost,
     fmt_tokens,
     model_label,
@@ -98,6 +108,7 @@ SLASH = {
     "/undo": "put files back to how they were before Vesper's last changes",
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
+    "/theme": "change the colors: /theme lists them, /theme dusk picks one",
     "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
@@ -413,7 +424,7 @@ class App:
         worker = self._worker
         if worker is None or not worker.is_alive():
             return
-        with console.status(Text("Finishing the stopped request…", style=MUTED), spinner="dots", spinner_style=ACCENT):
+        with console.status(Text("Finishing the stopped request…", style=MUTED), spinner="vesper", spinner_style=f"bold {ACCENT_3}"):
             while worker.is_alive():
                 try:
                     event, data = self._events.get(timeout=0.2)
@@ -449,12 +460,19 @@ class App:
                 return
 
     def make_prompt(self):
+        from prompt_toolkit.output import ColorDepth
+
+        def color_depth():
+            # prompt_toolkit assumes 256 colors; most terminals that say so can show them all.
+            if os.environ.get("PROMPT_TOOLKIT_COLOR_DEPTH"):
+                return None
+            return ColorDepth.TRUE_COLOR if os.environ.get("COLORTERM") in ("truecolor", "24bit") else None
+
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import Completer, Completion
-        from prompt_toolkit.formatted_text import HTML
         from prompt_toolkit.history import FileHistory, InMemoryHistory
         from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.styles import Style
+        from prompt_toolkit.styles import DynamicStyle, Style
 
         app = self
 
@@ -500,18 +518,59 @@ class App:
         def _(event):
             event.current_buffer.insert_text("\n")
 
-        def esc(text: str) -> str:
-            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
         def toolbar():
-            color = {"ask": "ansigreen", "auto-edit": "ansiyellow", "yolo": "ansired", "plan": "ansiblue"}[app.mode]
-            folder = tail_path(app.root, 34)
+            from prompt_toolkit.application import get_app
+
+            cols = get_app().output.get_size().columns
+            sep = [(f"fg:{FAINT}", "  │  " if cols >= 90 else " · ")]
+            model = model_label(app.cfg).split(" · ", 1)[-1]
             used = app.session.tokens["context"] if app.session else 0
-            ctx = f"  ·  context {min(100, round(100 * used / app.session.context_tokens))}%" if used else ""
-            loud = "  ·  <style fg='ansicyan'>transcript</style>" if app.verbose else ""
-            return HTML(f" <b>{esc(folder)}</b>  ·  {esc(model_label(app.cfg))}  ·  "
-                        f"<style fg='{color}'><b>{app.mode}</b></style> <style fg='ansigray'>(shift+tab)</style>"
-                        f"{ctx}{loud}  ·  <style fg='ansigray'>/help</style>")
+            share = min(1.0, used / app.session.context_tokens) if used else 0.0
+            branch = git_branch(app.root)
+            segments = [  # most important first; the rest are dropped when the window is narrow
+                [(f"fg:{ACCENT_3} bold", "✦ "), (f"fg:{TEXT}", model)],
+                [(f"fg:{mode_color(app.mode)} bold", app.mode)] + ([(f"fg:{FAINT}", " shift+tab")] if cols >= 100 else []),
+                [(f"fg:{FAINT}", "context ")] + [(f"fg:{c}", piece) for piece, c in meter_parts(share, 8)]
+                + [(f"fg:{MUTED}", f" {round(100 * share)}%")] if used else [],
+                [(f"fg:{MUTED}", tail_path(app.root, 32))],
+                [(f"fg:{MUTED}", f"⎇ {branch}")] if branch else [],
+                [(f"fg:{ACCENT_2}", "transcript")] if app.verbose else [],
+                [(f"fg:{FAINT}", "/help")],
+            ]
+            out, room = [("", " ")], cols - 2
+            for seg in (seg for seg in segments if seg):
+                size = sum(len(t) for _, t in seg) + (len(sep[0][1]) if len(out) > 1 else 0)
+                if size > room:
+                    continue
+                out += (sep if len(out) > 1 else []) + seg
+                room -= size
+            return out
+
+        def message():
+            from prompt_toolkit.application import get_app
+
+            cols = get_app().output.get_size().columns
+            return [(f"fg:{FAINT}", "─" * max(10, cols - 1) + "\n"), (f"fg:{ACCENT} bold", "❯ ")]
+
+        styles: dict[str, Style] = {}
+
+        def style():
+            if ACCENT not in styles:
+                from vesper import ui
+
+                dark = ui.THEME.dark
+                menu = blend(FAINT, "#000000" if dark else "#ffffff", 0.55 if dark else 0.82)
+                pick = blend(ACCENT, "#000000" if dark else "#ffffff", 0.45 if dark else 0.7)
+                styles.clear()
+                styles[ACCENT] = Style.from_dict({
+                    "bottom-toolbar": "noreverse", "bottom-toolbar.text": "",
+                    "completion-menu.completion": f"bg:{menu} fg:{TEXT}",
+                    "completion-menu.completion.current": f"bg:{pick} fg:{TEXT} bold",
+                    "completion-menu.meta.completion": f"bg:{menu} fg:{MUTED}",
+                    "completion-menu.meta.completion.current": f"bg:{pick} fg:{TEXT}",
+                    "scrollbar.background": f"bg:{menu}", "scrollbar.button": f"bg:{ACCENT}",
+                })
+            return styles[ACCENT]
 
         try:
             home().mkdir(parents=True, exist_ok=True)
@@ -519,10 +578,10 @@ class App:
         except OSError:
             history = InMemoryHistory()
         return PromptSession(
-            message=HTML(f"<style fg='{ACCENT}'><b>❯</b></style> "),
+            message=message,
             history=history, completer=Complete(), complete_while_typing=True, key_bindings=kb,
             bottom_toolbar=toolbar, enable_history_search=False,
-            style=Style.from_dict({"bottom-toolbar": "noreverse"}),
+            style=DynamicStyle(style), color_depth=color_depth(),
         )
 
     def set_mode(self, mode: str, quiet: bool = False) -> None:
@@ -648,6 +707,26 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def theme(self, arg: str) -> None:
+        from vesper import themes, ui
+        from vesper.onboarding import save_config
+
+        name = arg.strip().lower()
+        if not name:
+            console.print()
+            for p in themes.THEMES.values():
+                console.print(theme_swatch(p, p.name == ui.THEME.name))
+            console.print()
+            note("/theme <name> switches the colors and keeps them for next time.")
+            return
+        if name not in themes.THEMES:
+            note(f"There is no theme called {name}. /theme lists them.", WARN)
+            return
+        chosen = apply_theme(name)
+        self.cfg["theme"] = name
+        save_config({"theme": name})
+        console.print(Text("  ") + gradient(f"✦ {chosen.label}") + Text(f"  {chosen.mood}", style=MUTED))
+
     def fallback(self, arg: str) -> None:
         from vesper import fallback
 
@@ -702,7 +781,7 @@ class App:
         self.wait_idle()
         before = self.session.tokens["context"]
         try:
-            with console.status(Text("Summarizing the conversation…", style=MUTED), spinner="dots", spinner_style=ACCENT):
+            with console.status(Text("Summarizing the conversation…", style=MUTED), spinner="vesper", spinner_style=f"bold {ACCENT_3}"):
                 done = self.session.compact()
         except KeyboardInterrupt:
             note("stopped", WARN)
@@ -986,6 +1065,8 @@ class App:
             self.small(arg)
         elif cmd == "/fallback":
             self.fallback(arg)
+        elif cmd == "/theme":
+            self.theme(arg)
         elif cmd == "/permissions":
             self.permissions(arg)
         elif cmd == "/mcp":
@@ -1350,6 +1431,7 @@ def main(argv: list[str] | None = None) -> int:
         err_console.print(f"{root} is not a folder.", style=ERR)
         return 2
     cfg = load_config()
+    apply_theme(cfg.get("theme"))
     if args.model:
         from vesper import providers as prov
 
@@ -1391,7 +1473,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     app = App(root, mode, cfg, store)
     banner(root, cfg, mode)
-    with console.status(Text("Starting…", style=MUTED), spinner="dots", spinner_style=ACCENT):
+    with console.status(Text("Starting…", style=MUTED), spinner="vesper", spinner_style=f"bold {ACCENT_3}"):
         try:
             app.build(resume)
         except Exception as exc:  # noqa: BLE001

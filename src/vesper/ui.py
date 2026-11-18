@@ -2,34 +2,44 @@
 and the tables for sessions and the activity log.
 
 Nothing here talks to a model or touches files; `tui.py` decides what to show and when.
+The colors come from a theme (`themes.py`); `apply_theme` switches them everywhere at once.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
+import sys
 import time
 from pathlib import Path
 
 from rich import box
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
-from rich.markdown import Markdown
+from rich.markdown import CodeBlock, Heading, Markdown
 from rich.padding import Padding
 from rich.panel import Panel
-from rich.spinner import Spinner
+from rich.spinner import SPINNERS, Spinner
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme
 
-from vesper import __version__
+from vesper import __version__, themes
 
-ACCENT = "#8b7cff"
-ACCENT_2 = "#2dd4bf"
-MUTED = "grey58"
-OK = "#34d399"
-ERR = "#f87171"
-WARN = "#fbbf24"
+# The colors in use. `apply_theme` rebinds these names here and in the modules that
+# imported them (tui, onboarding), so every screen follows a theme change at once.
+THEME: themes.Palette = themes.THEMES[themes.DEFAULT]
+ACCENT = THEME.accent
+ACCENT_2 = THEME.accent_2
+ACCENT_3 = THEME.accent_3
+TEXT = THEME.text
+MUTED = THEME.muted
+FAINT = THEME.faint
+OK = THEME.ok
+ERR = THEME.err
+WARN = THEME.warn
 
 MODES = {
     "ask": "asks before edits and commands",
@@ -49,6 +59,8 @@ MAIN_ARG = {
     "change_directory": "path", "glob": "pattern", "grep": "pattern",
     "run_command": "command", "run_check": "command", "web_fetch": "url", "web_search": "query",
 }
+READING = frozenset({"list_files", "read_file", "glob", "grep", "change_directory", "web_fetch", "web_search"})
+CHANGING = frozenset({"write_file", "edit_file"})
 LIVE_OUTPUT_LINES = 5     # lines of a running command kept on screen
 LIVE_THOUGHT_LINES = 4    # lines of the model's thinking kept on screen while it thinks
 VERBOSE_OUTPUT_LINES = 60  # lines of tool output shown in verbose mode
@@ -57,19 +69,69 @@ AUTO_DIFF_LINES = 24      # lines of a diff shown for an edit that did not need 
 console = Console(highlight=False)
 err_console = Console(stderr=True, highlight=False)
 
+# A star that twinkles while Vesper works.
+SPINNERS["vesper"] = {"interval": 110, "frames": ["✦", "✧", "⋆", "·", "⋆", "✧"]}
+
+
+def _markdown_theme() -> Theme:
+    return Theme({
+        "markdown.code": f"bold {ACCENT_2}", "markdown.link": ACCENT, "markdown.link_url": f"underline {ACCENT}",
+        "markdown.h1": f"bold {ACCENT}", "markdown.h2": f"bold {TEXT}", "markdown.h3": f"bold {MUTED}",
+        "markdown.h4": f"italic {MUTED}", "markdown.item.bullet": ACCENT, "markdown.item.number": ACCENT,
+        "markdown.block_quote": f"italic {MUTED}", "markdown.hr": FAINT, "markdown.table.border": FAINT,
+        "markdown.table.header": f"bold {TEXT}",
+    })
+
+
+_themed: set[int] = set()  # consoles that already carry a pushed Markdown theme
+
+
+def apply_theme(name: str | None = None) -> themes.Palette:
+    """Use the theme called `name` (the default for this terminal when unknown or None)."""
+    global THEME
+    THEME = themes.resolve(name)
+    colors = {"ACCENT": THEME.accent, "ACCENT_2": THEME.accent_2, "ACCENT_3": THEME.accent_3, "TEXT": THEME.text,
+              "MUTED": THEME.muted, "FAINT": THEME.faint, "OK": THEME.ok, "ERR": THEME.err, "WARN": THEME.warn}
+    globals().update(colors)
+    for module in ("vesper.tui", "vesper.onboarding"):
+        mod = sys.modules.get(module)
+        if mod is not None:
+            mod.__dict__.update({k: v for k, v in colors.items() if k in mod.__dict__})
+    for con in (console, err_console):
+        if id(con) in _themed:
+            con.pop_theme()
+        con.push_theme(_markdown_theme())
+        _themed.add(id(con))
+    return THEME
+
 
 # ---------------------------------------------------------------- small pieces
-def gradient(text: str, start: str = ACCENT, end: str = ACCENT_2) -> Text:
-    def rgb(h):
-        return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+def _rgb(h: str) -> tuple[int, int, int]:
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
 
-    a, b = rgb(start), rgb(end)
+
+def blend(a: str, b: str, t: float) -> str:
+    """The color a fraction `t` of the way from `a` to `b`."""
+    x, y = _rgb(a), _rgb(b)
+    c = [round(x[j] + (y[j] - x[j]) * t) for j in range(3)]
+    return f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+
+
+def ramp(stops: list[str], t: float) -> str:
+    """The color at `t` (0 to 1) along a line through several colors."""
+    if len(stops) == 1:
+        return stops[0]
+    t = min(1.0, max(0.0, t)) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    return blend(stops[i], stops[i + 1], t - i)
+
+
+def gradient(text: str, start: str | None = None, end: str | None = None, bold: bool = True) -> Text:
+    stops = [start or ACCENT, end or ACCENT_2] if start or end else [ACCENT, ACCENT_2, ACCENT_3]
     out = Text()
     n = max(1, len(text) - 1)
     for i, ch in enumerate(text):
-        t = i / n
-        c = tuple(round(a[j] + (b[j] - a[j]) * t) for j in range(3))
-        out.append(ch, style=f"bold #{c[0]:02x}{c[1]:02x}{c[2]:02x}")
+        out.append(ch, style=("bold " if bold else "") + ramp(stops, i / n))
     return out
 
 
@@ -130,33 +192,149 @@ def fmt_ago(timestamp: float) -> str:
     return dt.datetime.fromtimestamp(timestamp).strftime("%d %b %Y")
 
 
+def meter(fraction: float, width: int = 10) -> str:
+    """A bar `width` cells wide, filled to `fraction` with eighth-cell precision."""
+    eighths = round(min(1.0, max(0.0, fraction)) * width * 8)
+    full, part = divmod(eighths, 8)
+    bar = "█" * full + ("▏▎▍▌▋▊▉"[part - 1] if part else "")
+    return bar + " " * (width - len(bar))
+
+
+def meter_parts(fraction: float, width: int = 10) -> list[tuple[str, str]]:
+    """The meter as (text, color) pieces: the filled part, then a faint track."""
+    bar = meter(fraction, width).rstrip(" ")
+    return [(bar, meter_color(fraction)), ("─" * (width - len(bar)), FAINT)]
+
+
+def meter_color(fraction: float) -> str:
+    return OK if fraction < 0.6 else WARN if fraction < 0.85 else ERR
+
+
+_branch_cache: dict[str, tuple[float, str]] = {}
+
+
+def git_branch(folder: Path | str) -> str:
+    """The checked-out git branch of `folder` (empty when it is not in a repository)."""
+    key = str(folder)
+    hit = _branch_cache.get(key)
+    if hit and time.monotonic() - hit[0] < 2:
+        return hit[1]
+    branch = ""
+    p = Path(folder)
+    for d in (p, *p.parents):
+        git = d / ".git"
+        if not git.exists():
+            continue
+        try:
+            text = (git / "HEAD").read_text(errors="replace").strip() if git.is_dir() else ""
+        except OSError:
+            text = ""
+        if text.startswith("ref:"):
+            branch = text.removeprefix("ref: refs/heads/")
+        elif text:
+            branch = text[:7]  # a detached head: the commit
+        break
+    _branch_cache[key] = (time.monotonic(), branch)
+    return branch
+
+
+# ---------------------------------------------------------------- the banner
+# Letters drawn on a grid five dots tall; two dot rows share one line of half blocks.
+_GLYPHS = {
+    "V": ["X...X", "X...X", "X...X", ".X.X.", "..X.."],
+    "E": ["XXXX", "X...", "XXX.", "X...", "XXXX"],
+    "S": [".XXX", "X...", ".XX.", "...X", "XXX."],
+    "P": ["XXX.", "X..X", "XXX.", "X...", "X..."],
+    "R": ["XXX.", "X..X", "XXX.", "X.X.", "X..X"],
+}
+
+
+def wordmark(word: str = "VESPER", gap: int = 2) -> list[Text]:
+    """VESPER in half-block letters, its color moving from dusk blue to the evening star's gold."""
+    rows = ["", "", "", "", "", ""]
+    for n, ch in enumerate(word):
+        glyph = _GLYPHS[ch] + ["." * len(_GLYPHS[ch][0])]
+        for r in range(6):
+            rows[r] += ("." * gap if n else "") + glyph[r]
+    width = len(rows[0])
+    lines = []
+    for top, bottom in ((0, 1), (2, 3), (4, 5)):
+        line = Text()
+        for x in range(width):
+            a, b = rows[top][x] == "X", rows[bottom][x] == "X"
+            ch = "█" if a and b else "▀" if a else "▄" if b else " "
+            line.append(ch, style=ramp([ACCENT, ACCENT_2, ACCENT_3], x / max(1, width - 1)))
+        lines.append(line)
+    return lines
+
+
+def horizon(width: int) -> Text:
+    """A thin line that fades out to the right, like the last light at dusk."""
+    out = Text()
+    for x in range(width):
+        out.append("─", style=blend(ACCENT_3, FAINT, min(1.0, x / max(1, width * 0.7))))
+    return out
+
+
+def mode_color(mode: str) -> str:
+    return {"ask": OK, "auto-edit": WARN, "yolo": ERR, "plan": ACCENT_2}.get(mode, MUTED)
+
+
 def banner(root: Path, cfg: dict, mode: str) -> None:
-    title = Text.assemble(("✦ ", f"bold {ACCENT}"), gradient("Vesper"), (f"  v{__version__}", MUTED))
+    pad = "  "
+    if console.width < 60:  # narrow: the name on one line
+        console.print(Text.assemble(pad, ("✦ ", f"bold {ACCENT_3}"), gradient("Vesper"), (f"  v{__version__}", MUTED)))
+        console.print(Text(pad + tail_path(root, console.width - 4), style=MUTED))
+        return
+    mark = wordmark()
+    width = mark[0].cell_len
+    console.print()
+    for i, line in enumerate(mark):
+        star = Text("   ✦", style=f"bold {ACCENT_3}") if i == 0 else Text("")
+        console.print(Text(pad) + line + star)
+    console.print(Text.assemble(pad, (f"v{__version__}", FAINT), ("  ·  ", FAINT), ("a coding agent", MUTED)))
+    console.print(Text(pad) + horizon(min(width + 4, console.width - 4)))
+    branch = git_branch(root)
     rows = Table.grid(padding=(0, 2))
-    rows.add_column(style=MUTED, justify="right")
+    rows.add_column(style=FAINT, min_width=6)
     rows.add_column()
-    rows.add_row("model", model_label(cfg))
-    rows.add_row("folder", tail_path(root, 70))
-    rows.add_row("mode", f"{mode} · {MODES[mode]}")
+    rows.add_row("model", Text(model_label(cfg), style=TEXT))
+    rows.add_row("folder", Text.assemble((tail_path(root, 60), TEXT), (f"  ⎇ {branch}", MUTED) if branch else ""))
+    rows.add_row("mode", Text.assemble((mode, f"bold {mode_color(mode)}"), (f"  {MODES[mode]}", MUTED)))
+    console.print(Padding(rows, (0, 0, 0, 2)))
+    console.print()
     key = f"bold {ACCENT}"
-    tips = Text.assemble(
-        ("Ask for anything: code, files, commands.\n", ""),
-        ("/", key), (" commands  ", MUTED), ("@file", key), (" attach  ", MUTED), ("!cmd", key), (" shell  ", MUTED),
-        ("/cd", key), (" move  ", MUTED), ("/resume", key), (" history  ", MUTED), ("shift+tab", key), (" mode", MUTED),
-    )
-    console.print(Panel(Group(title, Text(""), rows, Text(""), tips), box=box.ROUNDED,
-                        border_style=ACCENT, padding=(1, 2), expand=False))
+    console.print(Text.assemble(
+        pad, ("/", key), (" commands   ", MUTED), ("@", key), (" attach   ", MUTED), ("!", key), (" shell   ", MUTED),
+        ("shift+tab", key), (" mode   ", MUTED), ("/theme", key), (" look", MUTED),
+    ))
+    console.print()
+
+
+def theme_swatch(p: themes.Palette, current: bool = False) -> Text:
+    """One line of /theme: the name in its own colors and its mood."""
+    stops = [p.accent, p.accent_2, p.accent_3]
+    out = Text("  ● " if current else "    ", style=f"bold {p.accent}")
+    word = p.label.ljust(10)
+    for i, ch in enumerate(word):
+        out.append(ch, style="bold " + ramp(stops, i / max(1, len(word) - 1)))
+    for i in range(14):
+        out.append("▆", style=ramp(stops, i / 13))
+    out.append(f"  {p.name:<9}", style=MUTED)
+    out.append(p.mood, style=FAINT)
+    return out
 
 
 def error_panel(message: str, hint: str = "") -> None:
-    body = Text(message)
+    body = Text(message, style=TEXT)
     if hint:
         body.append("\n" + hint, style=MUTED)
-    console.print(Panel(body, title="error", title_align="left", border_style=ERR, box=box.ROUNDED, expand=False))
+    console.print(Panel(body, title=Text(" ✗ error ", style=f"bold {ERR}"), title_align="left", border_style=ERR,
+                        box=box.ROUNDED, expand=False, padding=(0, 1)))
 
 
-def note(text: str, style: str = MUTED) -> None:
-    console.print(Text("  " + text, style=style))
+def note(text: str, style: str | None = None) -> None:
+    console.print(Text("  " + text, style=style or MUTED))
 
 
 # ---------------------------------------------------------------- tool calls
@@ -194,38 +372,85 @@ def summarize_output(name: str, output: str, ok: bool, limit: int = 6) -> Text:
         rest = body[:limit]
         t = Text(head, style=OK if head.startswith("exit code 0") else WARN)
         for line in rest:
-            t.append("\n     " + line[:160], style=MUTED)
+            t.append("\n      " + line[:160], style=MUTED)
         if len(body) > len(rest):
-            t.append(f"\n     … {len(body) - len(rest)} more lines (ctrl+o shows all)", style=MUTED)
+            t.append(f"\n      +{len(body) - len(rest)} more lines (ctrl+o shows all)", style=FAINT)
         return t
     return Text(lines[0][:200] if lines else "done", style=MUTED)
 
 
+def tool_color(name: str) -> str:
+    return ACCENT_2 if name in READING else ACCENT_3 if name in CHANGING else ACCENT
+
+
 def tool_start_line(name: str, args: dict) -> Text:
-    return Text.assemble(("● ", ACCENT), (TOOL_LABELS.get(name, name), "bold"), ("  " + summarize_args(name, args), MUTED))
+    return Text.assemble(("● ", tool_color(name)), (TOOL_LABELS.get(name, name), f"bold {TEXT}"),
+                         ("  " + summarize_args(name, args), MUTED))
 
 
 def tool_end_line(name: str, output: str, ok: bool, ms: int | None, verbose: bool = False) -> Text:
-    line = Text("  ⎿  ", style=MUTED) + summarize_output(name, output, ok, VERBOSE_OUTPUT_LINES if verbose else 6)
+    line = Text("  ╰ ", style=FAINT)
+    if not ok:
+        line.append("✗ ", style=f"bold {ERR}")
+    line += summarize_output(name, output, ok, VERBOSE_OUTPUT_LINES if verbose else 6)
     if ms is not None and ms >= 1000:
-        line.append(f"  ({fmt_duration(ms / 1000)})", style=MUTED)
+        line.append(f"  {fmt_duration(ms / 1000)}", style=FAINT)
     if verbose and ok and len(output.splitlines()) > 1 and name != "run_command":
         shown = output.splitlines()[:VERBOSE_OUTPUT_LINES]
         for row in shown:
-            line.append("\n     " + row[:200], style=MUTED)
+            line.append("\n      " + row[:200], style=MUTED)
         extra = len(output.splitlines()) - len(shown)
         if extra > 0:
-            line.append(f"\n     … {extra} more lines", style=MUTED)
+            line.append(f"\n      +{extra} more lines", style=FAINT)
     return line
 
 
-def diff_panel(action: dict, title: str, border: str = WARN, limit: int | None = None) -> Panel:
-    diff = action.get("diff") or "(no changes)"
-    rows = diff.splitlines()
-    if limit and len(rows) > limit:
-        diff = "\n".join(rows[:limit]) + f"\n… {len(rows) - limit} more lines"
-    return Panel(Syntax(diff, "diff", theme="ansi_dark", word_wrap=True), title=title, title_align="left",
-                 border_style=border, box=box.ROUNDED)
+class DiffView:
+    """A unified diff with line numbers and tinted added and removed lines."""
+
+    def __init__(self, diff: str, limit: int | None = None) -> None:
+        self.diff, self.limit = diff, limit
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        width = options.max_width
+        rows = self.diff.splitlines()
+        shown = rows[:self.limit] if self.limit else rows
+        old = new = 0
+        for row in shown:
+            if row.startswith(("--- ", "+++ ")):
+                continue
+            hunk = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)", row)
+            if hunk:
+                where = hunk.group(3).strip()
+                if where or old or new:  # a function name, or a jump between hunks
+                    yield Text(f"    ⋯ {where}".rstrip(), style=FAINT)
+                old, new = int(hunk.group(1)), int(hunk.group(2))
+                continue
+            if row.startswith("+"):
+                num, mark, color, bg = new, "+", OK, THEME.add_bg
+                new += 1
+            elif row.startswith("-"):
+                num, mark, color, bg = old, "-", ERR, THEME.del_bg
+                old += 1
+            else:
+                num, mark, color, bg = new, " ", MUTED, ""
+                old, new = old + 1, new + 1
+            body = row[1:] if row[:1] in ("+", "-", " ") else row
+            line = Text.assemble((f"{num:>4} " if num else "     ", FAINT), (mark + " ", f"bold {color}"), (body, TEXT))
+            line.truncate(width)
+            line.pad_right(width - line.cell_len)
+            if bg:
+                line.stylize(f"on {bg}")
+            yield line
+        if self.limit and len(rows) > self.limit:
+            yield Text(f"     +{len(rows) - self.limit} more lines", style=FAINT)
+
+
+def diff_panel(action: dict, title: str, border: str | None = None, limit: int | None = None) -> Panel:
+    diff = action.get("diff") or ""
+    body = DiffView(diff, limit) if diff.strip() else Text("(no changes)", style=MUTED)
+    return Panel(body, title=Text(f" {title} ", style=f"bold {TEXT}"), title_align="left",
+                 border_style=border or WARN, box=box.ROUNDED, padding=(0, 1))
 
 
 def turn_footer(usage: dict, context_tokens: int) -> Text:
@@ -237,9 +462,17 @@ def turn_footer(usage: dict, context_tokens: int) -> Text:
     parts.append(f"{approx}{fmt_tokens(usage['input'])} in{cached}, {approx}{fmt_tokens(usage['output'])} out")
     if usage.get("cost") is not None:
         parts.append(fmt_cost(usage["cost"]) + (f" (chat {fmt_cost(usage['total_cost'])})" if usage.get("total_cost") else ""))
+    out = Text.assemble(("  ✦ ", ACCENT_3), (" · ".join(parts), FAINT))
     if context_tokens:
-        parts.append(f"context ~{round(100 * usage['context'] / context_tokens)}%")
-    return Text("  ✓ " + " · ".join(parts), style=MUTED)
+        used = usage["context"] / context_tokens
+        if out.cell_len + 22 <= console.width:
+            out.append("  ·  context ", style=FAINT)
+            for piece, color in meter_parts(used, 6):
+                out.append(piece, style=color)
+            out.append(f" {round(100 * used)}%", style=FAINT)
+        elif out.cell_len + 12 <= console.width:
+            out.append(f" · ctx {round(100 * used)}%", style=FAINT)
+    return out
 
 
 def fmt_cost(dollars: float) -> str:
@@ -255,10 +488,51 @@ def tasks_block(items: list[dict]) -> Text:
     """The agent's task list: done, in progress, to do."""
     out = Text()
     for n, item in enumerate(items):
-        mark, style = {"done": ("✔", MUTED), "active": ("▸", f"bold {ACCENT}")}.get(item.get("status"), ("☐", ""))
-        out.append(("\n" if n else "") + f"  {mark} ", style=OK if item.get("status") == "done" else style)
-        out.append(str(item.get("text", "")), style=style)
+        status = item.get("status")
+        mark, style = {"done": ("✓", OK), "active": ("◆", f"bold {ACCENT}")}.get(status, ("◇", MUTED))
+        out.append(("\n" if n else "") + f"  {mark} ", style=style)
+        text_style = FAINT if status == "done" else f"bold {TEXT}" if status == "active" else TEXT
+        out.append(str(item.get("text", "")), style=text_style)
     return out
+
+
+# ---------------------------------------------------------------- Markdown
+_BAR = box.Box("    \n▎   \n▎   \n▎   \n▎   \n▎   \n▎   \n    \n")
+
+
+class _Heading(Heading):
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        text = self.text.copy()
+        text.justify = "left"
+        if self.tag == "h1":
+            yield Text("")
+            yield text
+            yield Text("─" * min(text.cell_len + 2, options.max_width), style=FAINT)
+        else:
+            if self.tag == "h2":
+                yield Text("")
+            yield text
+
+
+class _Code(CodeBlock):
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        code = str(self.text).rstrip()
+        syntax = Syntax(code, self.lexer_name, theme="ansi_dark" if THEME.dark else "ansi_light",
+                        word_wrap=True, background_color="default")
+        lang = self.lexer_name if self.lexer_name not in ("", "text") else ""
+        yield Panel(syntax, box=_BAR, border_style=FAINT, padding=(0, 1), expand=True,
+                    title=Text(f"{lang} ", style=f"italic {FAINT}") if lang else None, title_align="left")
+
+
+class VMarkdown(Markdown):
+    """rich's Markdown with left-aligned headings and code blocks marked by a thin bar."""
+
+    elements = {**Markdown.elements, "heading_open": _Heading, "fence": _Code, "code_block": _Code}
+
+
+def answer(text: str) -> Padding:
+    """The agent's words, two columns in: under the tool names, clear of the ● and ❯ gutter."""
+    return Padding(VMarkdown(text, code_theme="ansi_dark" if THEME.dark else "ansi_light"), (0, 0, 0, 2))
 
 
 # ---------------------------------------------------------------- streaming renderer
@@ -277,27 +551,38 @@ def _last_block_end(text: str) -> int:
     return end
 
 
+def shimmer(text: str, since: float) -> Text:
+    """`text` with a soft band of light moving across it, left to right."""
+    out = Text()
+    span = len(text) + 8
+    pos = ((time.monotonic() - since) * 14) % span - 4
+    for i, ch in enumerate(text):
+        glow = max(0.0, 1 - abs(i - pos) / 3.5)
+        out.append(ch, style=blend(MUTED, TEXT, math.sin(glow * math.pi / 2)))
+    return out
+
+
 class _Busy:
     """The spinner line: what is happening, for how long, and the tail of a running command."""
 
     def __init__(self) -> None:
-        self.spinner = Spinner("dots", style=ACCENT)
+        self.spinner = Spinner("vesper", style=f"bold {ACCENT_3}")
         self.status = "Thinking"
         self.since = time.monotonic()
         self.tail: list[str] = []
 
     def __rich__(self):
         waited = time.monotonic() - self.since
-        text = Text(f"{self.status}…", style=MUTED)
+        text = shimmer(f"{self.status}…", self.since)
         if waited >= 2:
-            text.append(f" {fmt_duration(waited)}", style=MUTED)
+            text.append(f"  {fmt_duration(waited)}", style=FAINT)
         if waited >= 4:
-            text.append(" · ctrl+c to stop", style=MUTED)
-        self.spinner.update(text=text)
+            text.append("  ·  ctrl+c to stop", style=FAINT)
+        self.spinner.update(text=text, style=f"bold {ACCENT_3}")
         if not self.tail:
             return self.spinner
         width = max(20, console.width - 8)
-        return Group(self.spinner, *[Text("     " + line[:width], style=MUTED) for line in self.tail])
+        return Group(self.spinner, *[Text("  │ " + line[:width], style=FAINT) for line in self.tail])
 
 
 class Renderer:
@@ -311,7 +596,7 @@ class Renderer:
         self.thinking_since: float | None = None
 
     def _renderable(self):
-        return Markdown(self.buffer) if self.buffer.strip() else self.busy
+        return answer(self.buffer) if self.buffer.strip() else self.busy
 
     def start(self, status: str | None = None) -> None:
         if status and status != self.busy.status:
@@ -357,10 +642,10 @@ class Renderer:
         self.stop()
         took = fmt_duration(time.monotonic() - (began or time.monotonic()))
         if verbose:
-            console.print(Text(f"✻ Thinking ({took})", style=f"italic {ACCENT}"))
+            console.print(Text(f"∴ Thinking ({took})", style=f"italic {ACCENT}"))
             console.print(Padding(Text(text, style=f"italic {MUTED}"), (0, 0, 0, 2)))
         else:
-            console.print(Text(f"✻ Thought for {took}", style=f"italic {MUTED}"))
+            console.print(Text(f"∴ Thought for {took}", style=f"italic {FAINT}"))
 
     def token(self, text: str) -> None:
         self.buffer += text
@@ -368,14 +653,14 @@ class Renderer:
         if cut > 0:
             done, self.buffer = self.buffer[:cut], self.buffer[cut:]
             if done.strip():
-                console.print(Markdown(done))
+                console.print(answer(done))
         self.start()
 
     def flush(self) -> None:
         text, self.buffer = self.buffer, ""
         self.stop()
         if text.strip():
-            console.print(Markdown(text))
+            console.print(answer(text))
 
     def stop(self) -> None:
         if self.live is not None:
@@ -385,7 +670,7 @@ class Renderer:
 
 # ---------------------------------------------------------------- sessions and logs
 def sessions_table(rows: list[dict], current: str = "") -> Table:
-    t = Table(box=box.SIMPLE_HEAD, header_style=MUTED, padding=(0, 1))
+    t = Table(box=box.SIMPLE_HEAD, header_style=FAINT, border_style=FAINT, padding=(0, 1))
     room = max(16, min(48, console.width - 64))  # what is left for the title on a narrow terminal
     t.add_column("#", justify="right", style=ACCENT, min_width=2, no_wrap=True)
     t.add_column("id", style=MUTED, min_width=8, no_wrap=True)
@@ -448,17 +733,17 @@ def print_transcript(turns: list[dict]) -> None:
             continue
         for part in turn["parts"]:
             if part["type"] == "reasoning":
-                console.print(Text("✻ Thinking", style=f"italic {ACCENT}"))
+                console.print(Text("∴ Thinking", style=f"italic {ACCENT}"))
                 console.print(Padding(Text(part["text"], style=f"italic {MUTED}"), (0, 0, 0, 2)))
             elif part["type"] == "text":
-                console.print(Markdown(part["text"]))
+                console.print(answer(part["text"]))
             else:
                 console.print(tool_start_line(part["name"], part["args"]))
                 detail = tool_detail(part["name"], part["args"])
                 if detail is not None:
                     console.print(Padding(detail, (0, 0, 0, 5)))
                 if part["output"] is None:
-                    console.print(Text("  ⎿  (stopped before it finished)", style=WARN))
+                    console.print(Text("  ╰ (stopped before it finished)", style=WARN))
                 else:
                     console.print(tool_end_line(part["name"], part["output"], bool(part["ok"]), None, verbose=True))
 
@@ -499,3 +784,6 @@ def print_events(events: list[dict], full: bool = False, out: Console | None = N
                 out.print(Text("            " + row[:200], style=MUTED))
             if len(rows) > VERBOSE_OUTPUT_LINES:
                 out.print(Text(f"            … {len(rows) - VERBOSE_OUTPUT_LINES} more lines", style=MUTED))
+
+
+apply_theme()  # the default theme until the config names one
