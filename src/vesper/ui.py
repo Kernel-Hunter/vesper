@@ -239,33 +239,76 @@ def git_branch(folder: Path | str) -> str:
 
 
 # ---------------------------------------------------------------- the banner
-# Letters drawn on a grid five dots tall; two dot rows share one line of half blocks.
+# Letters on a grid seven dots tall with two-dot strokes. Each line of text shows two dot rows:
+# a half block whose foreground paints the top dot and whose background paints the bottom one.
 _GLYPHS = {
-    "V": ["X...X", "X...X", "X...X", ".X.X.", "..X.."],
-    "E": ["XXXX", "X...", "XXX.", "X...", "XXXX"],
-    "S": [".XXX", "X...", ".XX.", "...X", "XXX."],
-    "P": ["XXX.", "X..X", "XXX.", "X...", "X..."],
-    "R": ["XXX.", "X..X", "XXX.", "X.X.", "X..X"],
+    "V": ["XX...XX", "XX...XX", "XX...XX", ".XX.XX.", ".XX.XX.", "..XXX..", "...X..."],
+    "E": ["XXXXXX", "XX....", "XX....", "XXXXX.", "XX....", "XX....", "XXXXXX"],
+    "S": [".XXXXX", "XX....", "XX....", ".XXXX.", "....XX", "....XX", "XXXXX."],
+    "P": ["XXXXX.", "XX..XX", "XX..XX", "XXXXX.", "XX....", "XX....", "XX...."],
+    "R": ["XXXXX.", "XX..XX", "XX..XX", "XXXXX.", "XX.XX.", "XX..XX", "XX..XX"],
 }
 
 
+def _toward_background(color: str, amount: float) -> str:
+    return blend(color, "#000000" if THEME.dark else "#ffffff", amount)
+
+
 def wordmark(word: str = "VESPER", gap: int = 2) -> list[Text]:
-    """VESPER in half-block letters, its color moving from dusk blue to the evening star's gold."""
-    rows = ["", "", "", "", "", ""]
+    """VESPER in solid letters. The color runs from dusk blue to the evening star's gold,
+    and each letter is a little brighter at the top, as if lit from above."""
+    rows = [""] * 7
     for n, ch in enumerate(word):
-        glyph = _GLYPHS[ch] + ["." * len(_GLYPHS[ch][0])]
-        for r in range(6):
-            rows[r] += ("." * gap if n else "") + glyph[r]
-    width = len(rows[0])
+        for r in range(7):
+            rows[r] += ("." * gap if n else "") + _GLYPHS[ch][r]
+    width, height = len(rows[0]), 8  # the eighth dot row stays empty
+    stops = [ACCENT, ACCENT_2, ACCENT_3]
+
+    def dot(x: int, y: int) -> str | None:
+        base = ramp(stops, x / max(1, width - 1))
+        if y < 7 and x < width and rows[y][x] == "X":
+            return blend(base, "#ffffff", 0.25 * (1 - y / 6)) if THEME.dark else _toward_background(base, 0.1 * y / 6)
+        return None
+
     lines = []
-    for top, bottom in ((0, 1), (2, 3), (4, 5)):
+    for r in range(height // 2):
         line = Text()
         for x in range(width):
-            a, b = rows[top][x] == "X", rows[bottom][x] == "X"
-            ch = "█" if a and b else "▀" if a else "▄" if b else " "
-            line.append(ch, style=ramp([ACCENT, ACCENT_2, ACCENT_3], x / max(1, width - 1)))
+            top, bottom = dot(x, 2 * r), dot(x, 2 * r + 1)
+            if top is None and bottom is None:
+                line.append(" ")
+            elif top == bottom:
+                line.append("█", style=top)
+            elif top is None:
+                line.append("▄", style=bottom)
+            elif bottom is None:
+                line.append("▀", style=top)
+            else:
+                line.append("▀", style=f"{top} on {bottom}")
         lines.append(line)
     return lines
+
+
+# A few stars beside the name: (column, line, glyph, how bright 0 to 1). The first is the evening star.
+_SKY = [(4, 0, "✦", 1.0), (11, 1, "·", 0.35), (17, 0, "⋆", 0.5), (8, 3, "·", 0.3), (21, 2, "·", 0.25),
+        (15, 3, "✧", 0.45), (1, 2, "·", 0.2)]
+
+
+def sky(width: int = 24, height: int = 4) -> list[Text]:
+    grid = [[" "] * width for _ in range(height)]
+    styles: dict[tuple[int, int], str] = {}
+    for x, y, glyph, bright in _SKY:
+        if x < width and y < height:
+            grid[y][x] = glyph
+            color = ACCENT_3 if bright >= 1 else blend(FAINT, TEXT, bright)
+            styles[(x, y)] = ("bold " if bright >= 1 else "") + color
+    out = []
+    for y in range(height):
+        line = Text()
+        for x in range(width):
+            line.append(grid[y][x], style=styles.get((x, y), ""))
+        out.append(line)
+    return out
 
 
 def horizon(width: int) -> Text:
@@ -280,20 +323,45 @@ def mode_color(mode: str) -> str:
     return {"ask": OK, "auto-edit": WARN, "yolo": ERR, "plan": ACCENT_2}.get(mode, MUTED)
 
 
+def tint(amount: float = 0.12) -> str:
+    """A background a little lighter (or darker, on light themes) than the terminal's, tinted
+    with the accent: for message bubbles and keycaps."""
+    base = blend(FAINT, "#000000", 0.55) if THEME.dark else blend(ACCENT, "#ffffff", 0.9)
+    return blend(base, ACCENT, amount)
+
+
+def keycap(key: str, color: str | None = None) -> Text:
+    """A key drawn like a key: ` y ` on a raised background."""
+    out = Text()
+    out.append(f" {key} ", style=f"bold {color or TEXT} on {tint(0.18)}")
+    return out
+
+
+def keys_line(items: list[tuple[str, str]], indent: int = 2, color: str | None = None) -> Text:
+    """Keycaps with what they do: [/] commands   [@] attach ..."""
+    out = Text(" " * indent)
+    for n, (key, what) in enumerate(items):
+        if n:
+            out.append("   ")
+        out += keycap(key, color or ACCENT)
+        out.append(f" {what}", style=MUTED)
+    return out
+
+
 def banner(root: Path, cfg: dict, mode: str) -> None:
     pad = "  "
-    if console.width < 60:  # narrow: the name on one line
+    if console.width < 64:  # narrow: the name on one line
         console.print(Text.assemble(pad, ("✦ ", f"bold {ACCENT_3}"), gradient("Vesper"), (f"  v{__version__}", MUTED)))
         console.print(Text(pad + tail_path(root, console.width - 4), style=MUTED))
         return
     mark = wordmark()
-    width = mark[0].cell_len
+    stars = sky(min(24, console.width - mark[0].cell_len - 6), len(mark))
     console.print()
-    for i, line in enumerate(mark):
-        star = Text("   ✦", style=f"bold {ACCENT_3}") if i == 0 else Text("")
-        console.print(Text(pad) + line + star)
+    for line, star_line in zip(mark, stars):
+        console.print(Text(pad) + line + Text("   ") + star_line)
+    width = mark[0].cell_len
     console.print(Text.assemble(pad, (f"v{__version__}", FAINT), ("  ·  ", FAINT), ("a coding agent", MUTED)))
-    console.print(Text(pad) + horizon(min(width + 4, console.width - 4)))
+    console.print(Text(pad) + horizon(min(width + 14, console.width - 4)))
     branch = git_branch(root)
     rows = Table.grid(padding=(0, 2))
     rows.add_column(style=FAINT, min_width=6)
@@ -303,12 +371,14 @@ def banner(root: Path, cfg: dict, mode: str) -> None:
     rows.add_row("mode", Text.assemble((mode, f"bold {mode_color(mode)}"), (f"  {MODES[mode]}", MUTED)))
     console.print(Padding(rows, (0, 0, 0, 2)))
     console.print()
-    key = f"bold {ACCENT}"
-    console.print(Text.assemble(
-        pad, ("/", key), (" commands   ", MUTED), ("@", key), (" attach   ", MUTED), ("!", key), (" shell   ", MUTED),
-        ("shift+tab", key), (" mode   ", MUTED), ("/theme", key), (" look", MUTED),
-    ))
+    console.print(keys_line([("/", "commands"), ("@", "attach"), ("!", "shell"), ("⇧ tab", "mode"), ("/theme", "look")]))
     console.print()
+
+
+def user_bubble(text: str) -> Padding:
+    """What you sent, on a tinted band the width of the window."""
+    body = Text.assemble(("❯ ", f"bold {ACCENT}"), (text, f"{TEXT}"))
+    return Padding(body, (0, 1), style=f"on {tint()}", expand=True)
 
 
 def theme_swatch(p: themes.Palette, current: bool = False) -> Text:
@@ -462,7 +532,7 @@ def turn_footer(usage: dict, context_tokens: int) -> Text:
     parts.append(f"{approx}{fmt_tokens(usage['input'])} in{cached}, {approx}{fmt_tokens(usage['output'])} out")
     if usage.get("cost") is not None:
         parts.append(fmt_cost(usage["cost"]) + (f" (chat {fmt_cost(usage['total_cost'])})" if usage.get("total_cost") else ""))
-    out = Text.assemble(("  ✦ ", ACCENT_3), (" · ".join(parts), FAINT))
+    out = Text.assemble(("  ◦ ", FAINT), (" · ".join(parts), FAINT))
     if context_tokens:
         used = usage["context"] / context_tokens
         if out.cell_len + 22 <= console.width:
@@ -530,9 +600,17 @@ class VMarkdown(Markdown):
     elements = {**Markdown.elements, "heading_open": _Heading, "fence": _Code, "code_block": _Code}
 
 
-def answer(text: str) -> Padding:
-    """The agent's words, two columns in: under the tool names, clear of the ● and ❯ gutter."""
-    return Padding(VMarkdown(text, code_theme="ansi_dark" if THEME.dark else "ansi_light"), (0, 0, 0, 2))
+def answer(text: str, mark: bool = False):
+    """The agent's words, two columns in, under the tool names. `mark` puts Vesper's star in
+    the gutter: on the first block of each stretch of writing, like ❯ marks yours."""
+    body = VMarkdown(text, code_theme="ansi_dark" if THEME.dark else "ansi_light")
+    if not mark:
+        return Padding(body, (0, 0, 0, 2))
+    grid = Table.grid()
+    grid.add_column(width=2, no_wrap=True)
+    grid.add_column(ratio=1)
+    grid.add_row(Text("✦", style=f"bold {ACCENT_3}"), body)
+    return grid
 
 
 # ---------------------------------------------------------------- streaming renderer
@@ -594,9 +672,18 @@ class Renderer:
         self.busy = _Busy()
         self.thinking = ""                      # reasoning text of the step in progress
         self.thinking_since: float | None = None
+        self.marked = False                     # the star is drawn for this stretch of writing
+
+    def new_stretch(self) -> None:
+        """A tool ran or a new turn began: the next words get the star again."""
+        self.marked = False
+
+    def _answer(self, text: str):
+        out = answer(text, mark=not self.marked)
+        return out
 
     def _renderable(self):
-        return answer(self.buffer) if self.buffer.strip() else self.busy
+        return self._answer(self.buffer) if self.buffer.strip() else self.busy
 
     def start(self, status: str | None = None) -> None:
         if status and status != self.busy.status:
@@ -653,14 +740,16 @@ class Renderer:
         if cut > 0:
             done, self.buffer = self.buffer[:cut], self.buffer[cut:]
             if done.strip():
-                console.print(answer(done))
+                console.print(self._answer(done))
+                self.marked = True
         self.start()
 
     def flush(self) -> None:
         text, self.buffer = self.buffer, ""
         self.stop()
         if text.strip():
-            console.print(answer(text))
+            console.print(self._answer(text))
+            self.marked = True
 
     def stop(self) -> None:
         if self.live is not None:

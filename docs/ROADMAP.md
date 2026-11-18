@@ -15,6 +15,7 @@ Amp, Warp, GitHub Copilot and Continue.
   joins it before the agent's next step; one that arrives too late goes out when it ends.
 - **Test and lint loop** (0.14.0): `/check pytest -q` runs after the agent's edits; failures go
   back to it until they pass or three tries are used.
+- **Terminal polish** (0.21.0): solid lit wordmark with a few stars, your messages on a tinted band, a star marking each reply, keys drawn as keycaps, `/help` grouped by topic.
 - **Terminal redesign** (0.20.0): a gradient wordmark, eight themes (`/theme`), a status bar with a context meter and git branch, diffs with line numbers and tinted lines, a twinkling spinner with a moving shimmer, and code blocks marked by a thin bar.
 - **Automatic model switching** (0.19.0): when a model runs out of credits or hits a limit, the turn goes on with the next one: paid models first, then free models best first, then a local one (`/fallback`).
 - **Pick up where you left off** (0.18.0): the app reopens the last conversation and unsent drafts, asks before quitting mid-answer, offers Continue for answers cut off by a quit or crash; incremental saving and windowed drawing for very long sessions.

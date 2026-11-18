@@ -42,7 +42,7 @@ def test_meter_fills_to_an_eighth_of_a_cell():
 
 def test_wordmark_rows_line_up():
     rows = ui.wordmark()
-    assert len(rows) == 3 and len({r.cell_len for r in rows}) == 1
+    assert len(rows) == 4 and len({r.cell_len for r in rows}) == 1
     assert set("".join(r.plain for r in rows)) <= set("█▀▄ ")
 
 
@@ -75,3 +75,13 @@ def test_theme_command_saves_the_choice():
         assert ui.THEME.name == "forest"
     finally:
         ui.apply_theme("dusk")
+
+
+def test_keycaps_bubbles_and_the_answer_star():
+    cap = ui.keycap("y", ui.OK)
+    assert cap.plain == " y " and all("on " in str(span.style) for span in cap.spans)
+    assert "❯ fix the bug" in render(ui.user_bubble("fix the bug"))
+    assert render(ui.answer("Done.", mark=True)).startswith("✦ Done.")
+    assert render(ui.answer("Done.")).startswith("  Done.")
+    r = ui.Renderer()
+    assert r._answer("x") is not None and not r.marked

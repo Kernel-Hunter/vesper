@@ -31,6 +31,7 @@ from pathlib import Path
 
 from rich import box
 from rich.console import Group
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -72,7 +73,10 @@ from vesper.ui import (
     mode_color,
     git_branch,
     gradient,
+    keycap,
+    keys_line,
     theme_swatch,
+    user_bubble,
     fmt_cost,
     fmt_tokens,
     model_label,
@@ -123,6 +127,12 @@ SLASH = {
 }
 ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/delete": "/sessions rm", "/log": "/logs",
            "/allow": "/permissions", "/thinking": "/think"}
+HELP_GROUPS = [
+    ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/logs"]),
+    ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
+    ("How Vesper works", ["/plan", "/mode", "/check", "/cd", "/permissions", "/mcp", "/status"]),
+    ("Look", ["/theme", "/verbose"]),
+]
 SHORTCUTS = [
     ("@path", "attach a file, folder or image (@\"path with spaces\"); dropping an image file works too"),
     ("!command", "run a shell command yourself (!cd folder moves Vesper too)"),
@@ -297,11 +307,16 @@ class App:
             note("This can do serious damage or touches credentials, so it needs a yes every time.", ERR)
         try:
             while True:
-                parts = [("  Allow?  ", "bold"), ("y", f"bold {OK}"), (" yes  ", MUTED)]
+                line = Text.assemble(("  Allow?   ", f"bold {TEXT}"))
+                line += keycap("y", OK)
+                line.append(" yes    ", style=MUTED)
                 if not strict:
-                    parts += [("a", f"bold {ACCENT}"), (f" {always}  ", MUTED)]
-                parts += [("n", f"bold {ERR}"), (" no  ", MUTED), ("[n] " if strict else "[y] ", MUTED)]
-                console.print(Text.assemble(*parts), end="")
+                    line += keycap("a", ACCENT)
+                    line.append(f" {always}    ", style=MUTED)
+                line += keycap("n", ERR)
+                line.append(" no    ", style=MUTED)
+                line.append(f"enter = {'no' if strict else 'yes'}  › ", style=FAINT)
+                console.print(line, end="")
                 answer = input().strip().lower()
                 if answer in ("y", "yes") or (answer == "" and not strict):
                     return "yes"
@@ -318,6 +333,7 @@ class App:
     # ----- one turn -----
     def run_turn(self, text: str, shown: str | None = None, images: list | None = None) -> None:
         self.wait_idle()
+        self.renderer.new_stretch()
         events = self._events = queue.Queue()
         stop = self._stop = threading.Event()
         session = self.session
@@ -381,6 +397,7 @@ class App:
             r.restart("Thinking")
         elif event == "tool_start":
             r.flush()
+            r.new_stretch()
             console.print(tool_start_line(data["name"], data["args"]))
             if self.verbose and data["name"] == "run_command":
                 console.print(Text("     $ " + str(data["args"].get("command", "")), style=MUTED))
@@ -580,7 +597,7 @@ class App:
         return PromptSession(
             message=message,
             history=history, completer=Complete(), complete_while_typing=True, key_bindings=kb,
-            bottom_toolbar=toolbar, enable_history_search=False,
+            bottom_toolbar=toolbar, enable_history_search=False, erase_when_done=True,
             style=DynamicStyle(style), color_depth=color_depth(),
         )
 
@@ -1005,23 +1022,38 @@ class App:
         if cmd == "/exit":
             return False
         if cmd == "/help":
-            t = Table(box=None, padding=(0, 2), show_header=False)
-            t.add_column(style=f"bold {ACCENT}")
-            t.add_column(style=MUTED)
-            for c, d in SLASH.items():
-                t.add_row(c, d)
             from vesper.commands import find_commands
 
-            custom = find_commands(self.workspace.root)
-            if custom:
-                t.add_row("", "")
-                for name, c in custom.items():
-                    if "/" + name not in SLASH:
-                        t.add_row(f"/{name}" + (f" {c['hint']}" if c["hint"] else ""), f"{c['description']} ({c['scope']})")
-            t.add_row("", "")
+            listed: set[str] = set()
+            console.print()
+            for group, names in HELP_GROUPS:
+                console.print(Text.assemble(("  ", ""), (group, f"bold {TEXT}")))
+                t = Table.grid(padding=(0, 3))
+                t.add_column(style=f"bold {ACCENT}", min_width=14, no_wrap=True)
+                t.add_column(style=MUTED)
+                for c in names:
+                    if c in SLASH:
+                        t.add_row(c, SLASH[c])
+                        listed.add(c)
+                console.print(Padding(t, (0, 0, 1, 4)))
+            rest = [(c, d) for c, d in SLASH.items() if c not in listed]
+            custom = [(f"/{n}" + (f" {c['hint']}" if c["hint"] else ""), f"{c['description']} ({c['scope']})")
+                      for n, c in find_commands(self.workspace.root).items() if "/" + n not in SLASH]
+            if rest or custom:
+                console.print(Text("  More", style=f"bold {TEXT}"))
+                t = Table.grid(padding=(0, 3))
+                t.add_column(style=f"bold {ACCENT}", min_width=14, no_wrap=True)
+                t.add_column(style=MUTED)
+                for c, d in rest + custom:
+                    t.add_row(c, d)
+                console.print(Padding(t, (0, 0, 1, 4)))
+            console.print(Text("  Keys", style=f"bold {TEXT}"))
+            t = Table.grid(padding=(0, 3))
+            t.add_column(min_width=14, no_wrap=True)
+            t.add_column(style=MUTED)
             for k, d in SHORTCUTS:
-                t.add_row(k, d)
-            console.print(Panel(t, title="help", title_align="left", border_style=ACCENT, box=box.ROUNDED, expand=False))
+                t.add_row(keycap(k, ACCENT), d)
+            console.print(Padding(t, (0, 0, 1, 4)))
         elif cmd == "/cd":
             self.cd(arg)
         elif cmd == "/new":
@@ -1139,6 +1171,8 @@ class App:
             line = line.strip()
             if not line:
                 continue
+            console.print()
+            console.print(user_bubble(line))
             word = line.split()[0].lower()
             # "/Users/me/notes.txt what is this?" is a message about a path, not a command.
             if line.startswith("/") and (word in SLASH or word in ALIASES or not Path(line.split()[0]).exists()):
@@ -1158,7 +1192,7 @@ class App:
                 console.print()
         if self.session is not None and self.session.history and self.store is not None:
             note(f"Saved. Continue later with: vesper -r {self.session.id[:8]}")
-        console.print(Text("  See you ✦", style=ACCENT))
+        console.print(Text("  ") + gradient("See you") + Text(" ✦", style=f"bold {ACCENT_3}"))
 
 
 # ---------------------------------------------------------------- one-shot mode

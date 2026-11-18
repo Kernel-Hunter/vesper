@@ -37,7 +37,7 @@ def main(theme: str = "dusk", out: Path = OUT) -> None:
     say = con.print
 
     ui.banner(Path.home() / "projects" / "budget-app", {"provider": "anthropic", "model": "claude-sonnet-5-5"}, "ask")
-    prompt_line(con, "the monthly total test fails, fix it")
+    say(ui.user_bubble("the monthly total test fails, fix it"))
     say()
     steps = [
         ("run_command", {"command": "pytest -q"}, "exit code 1\n1 failed, 11 passed in 0.31s", 1400),
@@ -48,16 +48,16 @@ def main(theme: str = "dusk", out: Path = OUT) -> None:
         say(ui.tool_start_line(name, args))
         say(ui.tool_end_line(name, output, True, ms))
     say(Text("∴ Thought for 2.1s", style=f"italic {ui.FAINT}"))
-    say(ui.answer("Line 14 uses `=+`, which assigns instead of adding. Fixing it:"))
+    say(ui.answer(mark=True, text="Line 14 uses `=+`, which assigns instead of adding. Fixing it:"))
     say(ui.tool_start_line("edit_file", {"path": "src/budget.py"}))
     say(ui.diff_panel({"diff": DIFF}, "Edit src/budget.py"))
-    say(Text.assemble(("  Allow?  ", "bold"), ("y", f"bold {ui.OK}"), (" yes  ", ui.MUTED),
-                      ("a", f"bold {ui.ACCENT}"), (" always allow edits this session  ", ui.MUTED),
-                      ("n", f"bold {ui.ERR}"), (" no  ", ui.MUTED), ("[y] ", ui.MUTED), "y"))
+    say(Text.assemble(("  Allow?   ", f"bold {ui.TEXT}")) + ui.keycap("y", ui.OK) + Text(" yes    ", style=ui.MUTED)
+        + ui.keycap("a", ui.ACCENT) + Text(" always allow edits this session    ", style=ui.MUTED)
+        + ui.keycap("n", ui.ERR) + Text(" no    ", style=ui.MUTED) + Text("enter = yes  › ", style=ui.FAINT) + Text("y"))
     say(ui.tool_end_line("edit_file", "Edited src/budget.py", True, None))
     say(ui.tool_start_line("run_command", {"command": "pytest -q"}))
     say(ui.tool_end_line("run_command", "exit code 0\n12 passed in 0.29s", True, 1200))
-    say(ui.answer("Fixed. `monthly_total` added with `=+`, so it kept only the last row. "
+    say(ui.answer(mark=True, text="Fixed. `monthly_total` added with `=+`, so it kept only the last row. "
                   "All 12 tests pass now."))
     say(ui.turn_footer({"seconds": 14.2, "tools": 5, "input": 6200, "output": 410, "context": 9800,
                         "cost": 0.0213}, 200_000))

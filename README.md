@@ -267,6 +267,8 @@ keeps the choice for next time. If your terminal reports a light background thro
 `COLORFGBG`, Vesper starts in Daylight. The status bar under the prompt shows the model,
 the mode, how full the context is, the folder and the git branch, and drops the less
 important parts when the window is narrow.
+Your messages sit on a tinted band, Vesper's replies start with a small star, and keys
+you can press are drawn as keys.
 
 ### Token use
 
@@ -535,7 +537,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.20.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.21.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap
