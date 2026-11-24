@@ -124,6 +124,7 @@ SLASH = {
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
     "/mode": "ask | auto-edit | yolo | plan",
+    "/telegram": "use Vesper from Telegram: /telegram shows its state, /telegram on, /telegram off",
     "/app": "open the desktop app",
     "/exit": "quit (or ctrl+d)",
 }
@@ -134,6 +135,7 @@ HELP_GROUPS = [
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
     ("How Vesper works", ["/plan", "/mode", "/check", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
+    ("Elsewhere", ["/telegram", "/app"]),
 ]
 SHORTCUTS = [
     ("@path", "attach a file, folder or image (@\"path with spaces\"); dropping an image file works too"),
@@ -730,6 +732,36 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def vesper_command(self, line: str) -> None:
+        """`vesper ...` typed at Vesper's own prompt: do the obvious thing instead of asking the model."""
+        words = line.split()[1:]
+        if words[:1] == ["telegram"]:
+            flags = set(words[1:])
+            self.telegram("off" if "--stop" in flags else "on" if "--background" in flags else "")
+            return
+        note("You are already inside Vesper, so just type what you want done. Commands that start with "
+             "`vesper` are for a normal terminal window; to run one from here, put ! in front: !" + line)
+
+    def telegram(self, arg: str) -> None:
+        from vesper import telegram as tg
+
+        arg = arg.strip().lower()
+        if arg in ("on", "start"):
+            state = tg.status()
+            if state["text"].startswith(("not set up", "set up, not paired")):
+                note(state["hints"][0])
+                return
+            tg.background(True, self.root)
+        elif arg in ("off", "stop"):
+            tg.background(False, self.root)
+        elif arg:
+            note("Use /telegram, /telegram on or /telegram off.")
+        else:
+            state = tg.status()
+            console.print(Text.assemble(("  Telegram  ", f"bold {TEXT}"), (state["text"], OK if state["running"] else MUTED)))
+            for line in state["hints"]:
+                console.print(Text("  " + line, style=MUTED))
+
     def theme(self, arg: str) -> None:
         from vesper import themes, ui
         from vesper.onboarding import save_config
@@ -1128,6 +1160,8 @@ class App:
             self.fallback(arg)
         elif cmd == "/theme":
             self.theme(arg)
+        elif cmd == "/telegram":
+            self.telegram(arg)
         elif cmd == "/permissions":
             self.permissions(arg)
         elif cmd == "/mcp":
@@ -1210,6 +1244,9 @@ class App:
                 continue
             if line.startswith("!"):
                 self.shell(line[1:])
+                continue
+            if re.match(r"vesper(\s|$)", line, re.I):  # a terminal command typed inside Vesper
+                self.vesper_command(line)
                 continue
             console.print()
             message, images = self.expand_mentions(line)

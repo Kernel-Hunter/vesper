@@ -228,3 +228,38 @@ def test_guessing_the_pairing_code_disables_it(cfg_home, tmp_path):
         b.handle(message(f"/start {wrong}", user=9))
     b.handle(message(f"/start {code}", user=9))
     assert b.code is None and b.allowed_users() == []
+
+
+def test_vesper_never_kills_itself():
+    import os
+
+    from vesper.workspace import stops_vesper
+
+    assert stops_vesper('pkill -f "vesper telegram"') and stops_vesper("killall vesper")
+    assert stops_vesper(f"kill -9 {os.getpid()}") and stops_vesper(f"sleep 1; kill {os.getpid()} 2>/dev/null")
+    assert not stops_vesper("kill -9 1") and not stops_vesper(f"kill {os.getpid()}0") and not stops_vesper("ps aux | grep vesper")
+
+
+def test_typing_vesper_telegram_inside_vesper_does_not_reach_the_model(monkeypatch):
+    app = tui.App.__new__(tui.App)
+    seen = []
+    monkeypatch.setattr(tui.App, "telegram", lambda self, arg: seen.append(arg))
+    app.vesper_command("vesper telegram --stop")
+    app.vesper_command("vesper telegram")
+    app.vesper_command("vesper telegram --background")
+    assert seen == ["off", "", "on"]
+
+
+def test_status_explains_each_stage(cfg_home, monkeypatch):
+    monkeypatch.delenv(telegram.TOKEN_KEY, raising=False)
+    monkeypatch.setattr(telegram, "running_in_background", lambda: False)
+    from vesper import providers
+
+    monkeypatch.setattr(providers, "refresh_keys", lambda: None)
+    assert telegram.status()["text"] == "not set up yet"
+    monkeypatch.setenv(telegram.TOKEN_KEY, "1:x")
+    assert telegram.status()["text"] == "set up, not paired yet"
+    (cfg_home / "config.json").write_text(json.dumps({"telegram": {"allowed": [1]}}))
+    assert telegram.status()["text"] == "set up and paired, not running"
+    monkeypatch.setattr(telegram, "running_in_background", lambda: True)
+    assert telegram.status()["running"]

@@ -345,6 +345,9 @@ vesper telegram --stop         # stop the background bot
 vesper telegram --pair         # show a new code to pair another account
 ```
 
+Inside a Vesper session, `/telegram` shows whether the bot is set up and running, and
+`/telegram on` or `/telegram off` starts or stops the background bot.
+
 The bot runs on your computer and asks Telegram for new messages, so nothing is exposed
 to the internet and no server is needed. Your computer has to be on for the bot to answer.
 The token is kept in `~/.vesper/.env` and the paired accounts in `~/.vesper/config.json`.
@@ -581,7 +584,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.22.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.22.1` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

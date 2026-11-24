@@ -92,6 +92,14 @@ def _deny_all(_action: dict) -> str:
     return "no"
 
 
+def stops_vesper(command: str) -> bool:
+    """Whether a shell command would kill this Vesper process (pkill/killall of "vesper", or kill of our pid)."""
+    if re.search(r"\b(pkill|killall)\b[^;&|]*vesper", command, re.I):
+        return True
+    pids = {str(os.getpid()), str(os.getppid())}
+    return any(re.search(rf"\bkill\b[^;&|]*(?<![\w-]){pid}\b", command) for pid in pids)
+
+
 @dataclass
 class Workspace:
     root: Path
@@ -516,6 +524,9 @@ class Workspace:
         moved = re.fullmatch(r"cd(\s+(?P<to>[^;&|<>]+))?", command)
         if moved:  # a bare `cd`: make it last, like the user expects
             return self.change_directory((moved.group("to") or "~").strip())
+        if stops_vesper(command):
+            raise ToolError("That would stop Vesper itself, which is running this conversation. "
+                            "Ask the user to quit Vesper (Ctrl+D) or stop it from another terminal instead.")
         if background and sum(j.running for j in self.jobs.values()) >= MAX_JOBS:
             raise ToolError(f"{MAX_JOBS} background commands are already running; stop one with command_output first.")
         self._gate("run", {"tool": "run_command", "command": command, "cwd": str(self.root)},

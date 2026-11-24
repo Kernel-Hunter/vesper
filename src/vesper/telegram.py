@@ -776,6 +776,35 @@ def plist_text(program: list[str], log: Path) -> str:
 """
 
 
+def running_in_background() -> bool:
+    import subprocess
+
+    if sys.platform != "darwin":
+        return False
+    done = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], capture_output=True, text=True)
+    return done.returncode == 0 and "state = running" in done.stdout
+
+
+def status() -> dict:
+    """What `/telegram` shows: is the bot set up, paired, running."""
+    from vesper import providers as prov
+
+    prov.refresh_keys()
+    if not os.environ.get(TOKEN_KEY, "").strip():
+        return {"running": False, "text": "not set up yet",
+                "hints": ["In a normal terminal window, run  vesper telegram  and follow the steps (about a minute)."]}
+    if not Bot(None, None, {}, Path.cwd()).allowed_users():
+        return {"running": False, "text": "set up, not paired yet",
+                "hints": ["In a normal terminal window, run  vesper telegram  and send the code it shows to your bot."]}
+    if running_in_background():
+        return {"running": True, "text": "running in the background",
+                "hints": ["Send it messages from Telegram. Its conversations are in /resume here too.",
+                          "/telegram off stops it."]}
+    return {"running": False, "text": "set up and paired, not running",
+            "hints": ["/telegram on starts it in the background (it keeps running after a restart).",
+                      "Or run  vesper telegram  in a normal terminal window to keep it there."]}
+
+
 def background(on: bool, folder: Path) -> int:
     import subprocess
 
