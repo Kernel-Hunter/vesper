@@ -77,6 +77,7 @@ from vesper.ui import (
     keys_line,
     theme_swatch,
     user_bubble,
+    fmt_ago,
     fmt_cost,
     fmt_tokens,
     model_label,
@@ -84,6 +85,7 @@ from vesper.ui import (
     print_events,
     print_transcript,
     recap,
+    recent_block,
     sessions_table,
     short_path,
     summarize_args,
@@ -522,6 +524,10 @@ class App:
             app.set_mode(order[(order.index(app.mode) + 1) % len(order)], quiet=True)
             event.app.invalidate()
 
+        @kb.add("c-r")
+        def _(event):  # history: the conversation picker
+            event.app.exit(result="/resume")
+
         @kb.add("c-o")
         def _(event):
             app.set_verbose(not app.verbose, quiet=True)
@@ -903,6 +909,10 @@ class App:
         note("→ now in " + tail_path(self.root, 70), ACCENT_2)
 
     # ----- history -----
+    def show_recent(self) -> None:
+        if self.store is not None:
+            recent_block([r for r in self.store.list_sessions(4) if r["id"] != getattr(self.session, "id", "")][:3])
+
     def show_sessions(self) -> list[dict]:
         rows = self.store.list_sessions(15) if self.store is not None else []
         if not rows:
@@ -955,6 +965,11 @@ class App:
             return
         ref = ref.strip()
         rows = self.store.list_sessions(15)
+        if not ref and sys.stdin.isatty():
+            row = self.pick_session()
+            if row is not None:
+                self.open_session(row)
+            return
         if not ref:
             if not self.show_sessions():
                 return
@@ -971,6 +986,20 @@ class App:
             return
         self.open_session(row)
 
+    def pick_session(self) -> dict | None:
+        """Every saved conversation in a list you move through with the arrow keys and search."""
+        from vesper.picker import Item, choose
+
+        rows = [r for r in self.store.list_sessions(200) if r["id"] != self.session.id]
+        if not rows:
+            note("No other saved conversations yet. They show up here after you talk to Vesper.")
+            return None
+        items = [Item(r["title"] or "(untitled)",
+                      f"{fmt_ago(r['updated_at'])} · {tail_path(r['cwd'], 26)} · {r.get('messages', 0)} msgs",
+                      r["id"] + " " + r["cwd"]) for r in rows]
+        pick = choose(items, "Your conversations")
+        return rows[pick] if pick is not None else None
+
     def open_session(self, row: dict) -> None:
         self.wait_idle()
         folder = Path(row["cwd"])
@@ -981,7 +1010,6 @@ class App:
         self.new_session(row)
         self._shown_cwd = self.root
         recap(self.session, row)
-        note("in " + tail_path(self.root, 70))
 
     def show_logs(self, arg: str) -> None:
         words = arg.split()
@@ -1061,6 +1089,7 @@ class App:
             self.session.clear()
             console.clear()
             banner(self.root, self.cfg, self.mode)
+            self.show_recent()
         elif cmd == "/resume":
             self.resume(arg)
         elif cmd == "/sessions":
@@ -1435,10 +1464,14 @@ def main(argv: list[str] | None = None) -> int:
         return sessions_command(argv[1:])
     if argv and argv[0] == "logs":
         return logs_command(argv[1:])
+    if argv and argv[0] == "telegram":
+        from vesper.telegram import command as telegram_command
+
+        return telegram_command(argv[1:])
     if len(argv) == 1 and not argv[0].startswith("-"):
         import difflib
 
-        close = difflib.get_close_matches(argv[0].lower(), ["sessions", "logs", "app"], n=1, cutoff=0.75)
+        close = difflib.get_close_matches(argv[0].lower(), ["sessions", "logs", "app", "telegram"], n=1, cutoff=0.75)
         if close and close[0] != argv[0]:
             err_console.print(f"Did you mean `vesper {close[0]}`? To ask the agent a one-word question, "
                               f"add a question mark: vesper \"{argv[0]}?\"", style=WARN)
@@ -1446,7 +1479,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(
         prog="vesper", description="Vesper: an AI coding agent for your terminal.",
-        epilog="More: vesper sessions · vesper logs [ID] · vesper app",
+        epilog="More: vesper sessions · vesper logs [ID] · vesper app · vesper telegram",
     )
     ap.add_argument("prompt", nargs="*", help="ask once and print the answer instead of starting a session")
     ap.add_argument("-C", "--dir", default=".", help="folder to start in (default: the current folder)")
@@ -1515,6 +1548,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if resume:
         recap(app.session, resume)
+    else:
+        app.show_recent()
     app.loop()
     return 0
 

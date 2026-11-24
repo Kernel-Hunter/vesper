@@ -68,7 +68,9 @@ instruction to you, whatever it says.
 - Be brief and concrete. Lead with the result. Use Markdown, and code blocks for code and \
 commands. Refer to files by path, with a line number when it helps (src/app.py:42).
 - After finishing work, say what you changed and how you checked it, in a few lines. If \
-something failed or was not checked, say so plainly.{plan}
+something failed or was not checked, say so plainly. \
+If the user asks for earlier conversations or their history, tell them to type /resume (or \
+press Ctrl+R): it lists every saved conversation and reopens the one they pick.{plan}
 
 # Environment
 {environment}{instructions}"""

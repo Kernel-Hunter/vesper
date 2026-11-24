@@ -306,6 +306,50 @@ commands there. Pass `--mode auto-edit` or `--mode yolo` when you want them.
 vesper --json --mode auto-edit "fix the failing test" | jq -c 'select(.type == "result")'
 ```
 
+## Pick up an earlier conversation
+
+Press **Ctrl+R** at the prompt, or type `/resume`. A list of your conversations opens,
+newest first. Type a few words to narrow it down, move with the arrow keys and press
+Enter. Vesper then shows the whole conversation again (your messages, its answers and
+the steps it took), draws a "you are here" line, and you carry on from there.
+The last few conversations are also listed each time Vesper starts, so the one you want
+is often already on screen. You can ask Vesper itself too: "show me my old
+conversations" gets you the same instructions.
+
+## Use Vesper from Telegram
+
+`vesper telegram` connects Vesper to a Telegram bot of your own, so you can give it work
+from your phone. Every message you send becomes a turn of a normal conversation. While it
+works you see the same things as in the terminal: its answer as it is written, each step
+(file read, search, edit, command) with its result, the diff of every edit and the output
+of every command. When it needs a yes, the question comes with Yes, Always and No buttons.
+
+Setting it up takes about a minute:
+
+1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and
+   a username ending in `bot`. BotFather replies with a token.
+2. In the folder you want Vesper to work in, run `vesper telegram` and paste the token.
+3. Vesper prints a six-digit code. Send `/start CODE` to your new bot.
+
+That pairs your Telegram account. Anyone else who finds the bot gets a polite refusal.
+In the chat, `/new` starts a new conversation, `/resume` lists the earlier ones (from the
+terminal and the desktop app too) and replays the one you tap, `/stop` stops the current
+answer, `/mode` sets how much Vesper asks first, `/cd` moves to another folder and
+`/undo` puts back the files of the last change. A message sent while Vesper works is added
+to what it is doing.
+
+```bash
+vesper telegram                # run the bot in this terminal (Ctrl+C stops it)
+vesper telegram --background   # keep it running, also after a restart (macOS)
+vesper telegram --stop         # stop the background bot
+vesper telegram --pair         # show a new code to pair another account
+```
+
+The bot runs on your computer and asks Telegram for new messages, so nothing is exposed
+to the internet and no server is needed. Your computer has to be on for the bot to answer.
+The token is kept in `~/.vesper/.env` and the paired accounts in `~/.vesper/config.json`.
+Messages and code pass through Telegram's servers, so keep that in mind for private work.
+
 ## Sessions and logs
 
 Every conversation is stored in a SQLite database at `~/.vesper/vesper.db`: the messages,
@@ -537,7 +581,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.21.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.22.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

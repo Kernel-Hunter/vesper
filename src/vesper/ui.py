@@ -371,7 +371,8 @@ def banner(root: Path, cfg: dict, mode: str) -> None:
     rows.add_row("mode", Text.assemble((mode, f"bold {mode_color(mode)}"), (f"  {MODES[mode]}", MUTED)))
     console.print(Padding(rows, (0, 0, 0, 2)))
     console.print()
-    console.print(keys_line([("/", "commands"), ("@", "attach"), ("!", "shell"), ("⇧ tab", "mode"), ("/theme", "look")]))
+    console.print(keys_line([("/", "commands"), ("ctrl+r", "history"), ("@", "attach"), ("!", "shell"),
+                             ("⇧ tab", "mode"), ("/theme", "look")]))
     console.print()
 
 
@@ -433,7 +434,8 @@ def summarize_output(name: str, output: str, ok: bool, limit: int = 6) -> Text:
         n = 0 if output.startswith("No ") else len([line for line in lines if not line.startswith(("...", "("))])
         return Text(f"{n} result{'s' if n != 1 else ''}", style=MUTED)
     if name == "list_files":
-        return Text(f"{max(0, len(lines) - 1)} entries", style=MUTED)
+        n = max(0, len(lines) - 1)
+        return Text(f"{n} entr{'y' if n == 1 else 'ies'}", style=MUTED)
     if name == "change_directory":
         return Text(short_path(lines[0].removeprefix("Working directory is now ")) if lines else "", style=MUTED)
     if name in ("run_command", "run_check"):
@@ -774,26 +776,65 @@ def sessions_table(rows: list[dict], current: str = "") -> Table:
     return t
 
 
-def recap(session, row: dict) -> None:
-    """What a resumed conversation was about: its title and the last exchange."""
-    from langchain_core.messages import AIMessage, HumanMessage
-
-    from vesper.coder import text_of
-
-    console.print(Text.assemble(("  ↺ Resumed ", ACCENT), (row["title"] or "(untitled)", "bold"),
-                                (f"  · {len(session.history)} messages · {fmt_ago(row['updated_at'])}", MUTED)))
-    last_user = next((m for m in reversed(session.history) if isinstance(m, HumanMessage)), None)
-    last_answer = next((m for m in reversed(session.history) if isinstance(m, AIMessage) and text_of(m.content).strip()), None)
-    for who, msg in (("you", last_user), ("vesper", last_answer)):
-        if msg is None:
+def replay(turns: list[dict], max_turns: int = 24) -> None:
+    """A saved conversation drawn the way it looked: your messages, Vesper's words, each step."""
+    shown = turns[-max_turns:]
+    hidden = len(turns) - len(shown)
+    if hidden:
+        console.print(Text(f"  ⋯ {hidden} earlier messages · /transcript shows everything", style=FAINT))
+    for turn in shown:
+        console.print()
+        if turn["role"] == "user":
+            console.print(user_bubble(turn["text"]))
             continue
-        body = text_of(msg.content).split("\n\n<file path=")[0].strip().splitlines()
-        shown = " ".join(body[:4])[:300] + (" …" if len(body) > 4 or len(" ".join(body[:4])) > 300 else "")
-        console.print(Text.assemble((f"  {who:>6}  ", MUTED), (shown, MUTED)))
+        marked = False
+        for part in turn["parts"]:
+            if part["type"] == "reasoning":
+                continue
+            if part["type"] == "text":
+                if part["text"].strip():
+                    console.print(answer(part["text"], mark=not marked))
+                    marked = True
+                continue
+            console.print(tool_start_line(part["name"], part["args"]))
+            if part["output"] is None:
+                console.print(Text("  ╰ (stopped before it finished)", style=WARN))
+            else:
+                console.print(tool_end_line(part["name"], part["output"], bool(part["ok"]), None))
+            marked = False
+
+
+def recap(session, row: dict) -> None:
+    """A resumed conversation: its title, then the conversation itself, then where it stops."""
+    from vesper.coder import transcript
+
+    console.print()
+    console.print(Text.assemble(("  ↺ Resumed  ", f"bold {ACCENT}"), (row["title"] or "(untitled)", f"bold {TEXT}"),
+                                (f"  ·  {len(session.history)} messages  ·  {fmt_ago(row['updated_at'])}", FAINT)))
+    replay(transcript(session.history))
+    console.print()
+    width = min(console.width - 4, 72)
+    label = " you are here "
+    side = max(2, (width - len(label)) // 2)
+    console.print(Text.assemble(("  " + "─" * side, FAINT), (label, f"italic {MUTED}"), ("─" * side, FAINT)))
     store = getattr(session, "store", None)
     if store is not None and session.history and store.cut_off(session.id):
         console.print(Text.assemble(("  ! ", WARN), ("The last answer was cut off when Vesper closed. Type ", MUTED),
                                     ("continue", "bold"), (" to pick up where it stopped.", MUTED)))
+
+
+def recent_block(rows: list[dict]) -> None:
+    """The last few conversations on the start screen, so going back is one key away."""
+    if not rows:
+        return
+    console.print(Text("  Recent", style=f"bold {TEXT}"))
+    for row in rows:
+        title = (row["title"] or "(untitled)")
+        title = title if len(title) <= 50 else title[:49] + "…"
+        console.print(Text.assemble(("    ◦ ", FAINT), (title.ljust(52), TEXT),
+                                    (f"{fmt_ago(row['updated_at'])} · {tail_path(row['cwd'], 28)}", FAINT)))
+    console.print(Text("  ") + keycap("ctrl+r", ACCENT) + Text(" all conversations, searchable", style=MUTED))
+    console.print()
 
 
 def tool_detail(name: str, args: dict) -> Text | Syntax | None:
