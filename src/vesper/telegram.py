@@ -1,26 +1,42 @@
-"""Use Vesper from Telegram: `vesper telegram`.
+"""Use Vesper from Telegram.
 
-The bot runs on your computer and talks to Telegram's Bot API with long polling (standard
-library only, no web server, nothing to expose). Every message you send becomes a turn of a
-normal Vesper conversation, saved in the same database as the terminal and the desktop app.
-You see what Vesper does as it does it: its words stream into a message, each step (file
-read, search, edit, command) appears in an activity message with its result, edits show
-their diff, and anything that needs a yes arrives with Yes / Always / No buttons.
+Setting it up is one guided step, `/telegram` inside Vesper (or `vesper telegram` in a
+terminal): paste the token BotFather gave you, tap Start in your bot, confirm it is you,
+done. From then on the bot runs in the background as a login service.
 
-Only Telegram accounts you paired can use the bot: the first time, `vesper telegram` shows
-a six-digit code, and you send `/start CODE` to your bot. The token lives in
-`~/.vesper/.env` as TELEGRAM_BOT_TOKEN; paired accounts and the folder are in `config.json`
-under `telegram`.
+The bot talks to Telegram's Bot API with long polling (standard library only: no web
+server, nothing exposed). Every message becomes a turn of a normal Vesper conversation, saved
+in the same database as the terminal and the desktop app. The chat shows what Vesper does as
+it does it: its answer streams into a message, each step goes into an activity message with
+its result, edits show their diff, commands their output, and anything that needs a yes comes
+with Yes / Always / No buttons (a typed "yes" or "no" works too). Photos reach the model as
+images; other files are saved and handed to it by path.
+
+Reliability rules, learned from how other agents do this:
+- Only one poller per token: it holds an exclusive lock on `~/.vesper/telegram/poller.lock`.
+- The update offset is saved before an update is handled, so a crash or restart never runs
+  the same task twice; messages that waited while the bot was off are answered with a note
+  instead of being run hours late.
+- A send that may have reached Telegram is never repeated; edits and reads are retried.
+- HTML is checked before it is sent and falls back to plain text, and messages are split by
+  Telegram's own length rule (UTF-16 units).
+- `/telegram` shows the health of every part: token, pairing, service, lock, heartbeat.
+
+Files: the token is TELEGRAM_BOT_TOKEN in `~/.vesper/.env`; `~/.vesper/telegram/` holds
+settings.json (paired accounts, pending pairing codes, folder, mode), state.json (offset,
+heartbeat, last error), the lock, an inbox for received files, and the log.
 """
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import sys
 import threading
 import time
@@ -28,21 +44,40 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows: no advisory locks; the service is macOS and Linux only anyway
+    fcntl = None
+
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 API = "https://api.telegram.org/bot{token}/{method}"
-CHUNK = 3500            # characters of Markdown per message
-MAX_HTML = 4000         # Telegram's limit is 4096 characters after entities are parsed; keep a margin
-EDIT_EVERY_S = 1.5      # Telegram allows about one edit per second per chat
+FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
+CHUNK = 3500            # characters of Markdown per message before it is turned into HTML
+MAX_UNITS = 4000        # Telegram's limit is 4096 UTF-16 units; keep a margin
+EDIT_EVERY_S = 1.2      # Telegram allows about one edit per second per chat
 APPROVAL_TIMEOUT_S = 30 * 60
 POLL_S = 30
-MAX_WRONG_CODES = 10
+CONFLICT_WAITS = (15, 25, 35, 45, 55)   # another poller has the token: wait, then give up
+OFFLINE_AFTER_S = 120   # a message older than this when it arrives was sent while the bot was off
+STALE_HEARTBEAT_S = 3 * POLL_S
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
+CODE_TTL_S = 3600
+MAX_PENDING = 3
+MAX_FILE_BYTES = 20 * 1024 * 1024       # what the Bot API lets a bot download
+SETUP_WAIT_S = 5 * 60
+IDEMPOTENT = {"getMe", "getUpdates", "getFile", "editMessageText", "deleteMessage", "setMyCommands",
+              "answerCallbackQuery", "setMessageReaction", "sendChatAction", "deleteWebhook"}
 ICONS = {
     "read_file": "📖", "list_files": "📁", "glob": "🔎", "grep": "🔎", "change_directory": "📂",
     "write_file": "📝", "edit_file": "✏️", "run_command": "▶️", "run_check": "🧪", "web_fetch": "🌐",
-    "web_search": "🌐", "update_tasks": "📋",
+    "web_search": "🌐", "update_tasks": "📋", "command_output": "▶️",
 }
+COMMANDS = (("new", "Start a new conversation"), ("resume", "Go back to an earlier conversation"),
+            ("stop", "Stop what Vesper is doing"), ("mode", "How much Vesper asks first"),
+            ("cd", "Work in another folder"), ("undo", "Put back the last change"),
+            ("status", "Model, folder and conversation"), ("help", "What you can do"))
 HELP = """<b>Vesper on Telegram</b>
-Send any message and Vesper works on it, in <code>{folder}</code>. You see every step as it happens.
+Send any message and Vesper works on it, in <code>{folder}</code>. You see every step as it happens. Photos and files work too.
 
 /new start a new conversation
 /resume go back to an earlier one
@@ -57,7 +92,183 @@ While Vesper works, a new message is added to what it is doing."""
 
 
 class TelegramError(Exception):
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class AlreadyRunning(Exception):
     pass
+
+
+def home() -> Path:
+    from vesper.onboarding import home as vesper_home
+
+    return vesper_home() / "telegram"
+
+
+def log_path() -> Path:
+    return home() / "telegram.log"
+
+
+def units(text: str) -> int:
+    """Length as Telegram counts it: UTF-16 code units."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+@contextlib.contextmanager
+def _file_lock(name: str):
+    """An exclusive lock between Vesper processes (the background bot and the terminal both write)."""
+    path = home() / f"{name}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------- settings and state
+def load_settings() -> dict:
+    data = _read_json(home() / "settings.json")
+    if not data:  # 0.22.0 kept these in config.json
+        from vesper.onboarding import load_config
+
+        old = load_config().get("telegram")
+        if isinstance(old, dict):
+            data = {k: v for k, v in old.items() if k in ("allowed", "folder", "mode")}
+    data.setdefault("allowed", [])
+    data.setdefault("names", {})
+    data.setdefault("pending", [])
+    return data
+
+
+def update_settings(change) -> dict:
+    with _file_lock("settings"):
+        data = load_settings()
+        change(data)
+        _write_json(home() / "settings.json", data)
+        return data
+
+
+def allowed_users() -> list[int]:
+    return [int(u) for u in load_settings()["allowed"] if str(u).lstrip("-").isdigit()]
+
+
+def load_state() -> dict:
+    return _read_json(home() / "state.json")
+
+
+def save_state(**values) -> None:
+    with _file_lock("state"):
+        _write_json(home() / "state.json", {**load_state(), **values})
+
+
+def new_code() -> str:
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+
+
+def approve_code(code: str) -> dict | None:
+    """Pairs the account that asked with this code. Returns who it was, or None."""
+    code = code.strip().upper()
+    found: dict = {}
+
+    def change(data: dict) -> None:
+        now = time.time()
+        for p in data["pending"]:
+            if p["code"] == code and p["expires"] > now:
+                found.update(p)
+        data["pending"] = [p for p in data["pending"] if p["code"] != code and p["expires"] > now]
+        if found and found["user"] not in data["allowed"]:
+            data["allowed"].append(found["user"])
+            data["names"][str(found["user"])] = found.get("name", "")
+
+    update_settings(change)
+    return found or None
+
+
+def unpair(user: int) -> None:
+    def change(data: dict) -> None:
+        data["allowed"] = [u for u in data["allowed"] if u != user]
+        data["names"].pop(str(user), None)
+
+    update_settings(change)
+
+
+# ---------------------------------------------------------------- one poller per token
+class PollerLock:
+    """Held for the whole life of a poller. A second one fails at once instead of fighting
+    the first for updates (Telegram answers that with 409 Conflict)."""
+
+    def __init__(self) -> None:
+        self.file = None
+
+    def acquire(self) -> None:
+        path = home() / "poller.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(path, "a+")
+        if fcntl is not None:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                f.close()
+                raise AlreadyRunning(lock_holder()) from None
+        f.seek(0)
+        f.truncate()
+        f.write(str(os.getpid()))
+        f.flush()
+        self.file = f
+
+    def release(self) -> None:
+        if self.file is not None:
+            if fcntl is not None:
+                fcntl.flock(self.file, fcntl.LOCK_UN)
+            self.file.close()
+            self.file = None
+
+
+def lock_holder() -> int | None:
+    """The pid of the running poller, or None when nobody polls."""
+    path = home() / "poller.lock"
+    if fcntl is None or not path.exists():
+        return None
+    with open(path, "a+") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.seek(0)
+            text = f.read().strip()
+            return int(text) if text.isdigit() else -1
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return None
+
+
+def wait_until_free(seconds: float = 15) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if lock_holder() is None:
+            return True
+        time.sleep(0.2)
+    return lock_holder() is None
 
 
 # ---------------------------------------------------------------- the Bot API
@@ -67,14 +278,21 @@ def _tls():
     return tls()
 
 
+def _never_sent(e: Exception) -> bool:
+    """True when a request certainly did not reach Telegram (so sending it again is safe)."""
+    reason = getattr(e, "reason", e)
+    return isinstance(reason, (ConnectionRefusedError, socket.gaierror)) or "Name or service" in str(reason)
+
+
 class Api:
-    """The few Bot API methods Vesper uses, over HTTPS with JSON."""
+    """The Bot API methods Vesper uses, over HTTPS with JSON."""
 
     def __init__(self, token: str) -> None:
         self.token = token
 
     def call(self, method: str, **params):
         body = json.dumps({k: v for k, v in params.items() if v is not None}).encode()
+        safe = method in IDEMPOTENT
         for attempt in range(4):
             req = urllib.request.Request(API.format(token=self.token, method=method), data=body,
                                          headers={"Content-Type": "application/json"})
@@ -85,31 +303,71 @@ class Api:
                 try:
                     reply = json.loads(e.read())
                 except ValueError:
-                    raise TelegramError(f"Telegram answered HTTP {e.code}") from e
+                    raise TelegramError(f"Telegram answered HTTP {e.code}", e.code) from e
             except (urllib.error.URLError, TimeoutError, OSError) as e:
-                if attempt == 3:
-                    raise TelegramError(f"Cannot reach Telegram ({e})") from e
-                time.sleep(2 * (attempt + 1))
+                if attempt == 3 or not (safe or _never_sent(e)):
+                    raise TelegramError(f"Cannot reach Telegram ({getattr(e, 'reason', e)})") from e
+                time.sleep(1 + attempt)
                 continue
             if reply.get("ok"):
                 return reply["result"]
             wait = (reply.get("parameters") or {}).get("retry_after")
-            if wait and attempt < 3:  # too many requests: Telegram says how long to wait
-                time.sleep(min(float(wait), 10))
+            if wait and attempt < 3:  # flood control: Telegram says how long to wait
+                time.sleep(min(float(wait), 30))
                 continue
-            raise TelegramError(reply.get("description") or "Telegram refused the request")
+            raise TelegramError(reply.get("description") or "Telegram refused the request", reply.get("error_code"))
         raise TelegramError("Telegram kept refusing the request")
+
+    def download(self, file_id: str) -> tuple[bytes, str]:
+        info = self.call("getFile", file_id=file_id)
+        if int(info.get("file_size") or 0) > MAX_FILE_BYTES or not info.get("file_path"):
+            raise TelegramError("The file is larger than the 20 MB a bot can download.")
+        url = FILE_API.format(token=self.token, path=info["file_path"])
+        with urllib.request.urlopen(url, timeout=120, context=_tls()) as r:
+            data = r.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise TelegramError("The file is larger than the 20 MB a bot can download.")
+        return data, info["file_path"]
 
 
 # ---------------------------------------------------------------- Markdown to Telegram HTML
+TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "pre", "a", "blockquote",
+        "tg-spoiler", "span"}
+
+
+def valid_html(text: str) -> bool:
+    """Whether Telegram's parser will accept this: known tags, closed in the right order."""
+    stack = []
+    for m in re.finditer(r"<(/?)([a-z-]+)([^>]*)>", text):
+        closing, tag = m.group(1), m.group(2)
+        if tag not in TAGS:
+            return False
+        if closing:
+            if not stack or stack.pop() != tag:
+                return False
+        else:
+            stack.append(tag)
+    return not stack and "<" not in re.sub(r"<(/?)([a-z-]+)([^>]*)>", "", text)
+
+
+def strip_html(text: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
 def _inline(text: str) -> str:
-    t = html.escape(text, quote=False)
-    t = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", t)
-    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
-    t = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", t)
+    codes: list[str] = []
+
+    def keep(m: re.Match) -> str:  # code spans first, so ** inside them is not bold
+        codes.append(f"<code>{html.escape(m.group(1), quote=False)}</code>")
+        return f"\x00{len(codes) - 1}\x00"
+
+    t = re.sub(r"`([^`\n]+)`", keep, text)
+    t = html.escape(t, quote=False)
+    t = re.sub(r"(?m)^#{1,6}\s+(.+)$", lambda m: "<b>" + m.group(1).replace("**", "") + "</b>", t)
+    t = re.sub(r"\*\*([^\n]+?)\*\*", r"<b>\1</b>", t)
     t = re.sub(r"(?m)^(\s*)[-*]\s+", r"\1• ", t)
-    t = re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', t)
-    return t
+    t = re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s\"]+)\)", r'<a href="\2">\1</a>', t)
+    return re.sub("\x00(\\d+)\x00", lambda m: codes[int(m.group(1))], t)
 
 
 def to_html(md: str) -> str:
@@ -121,7 +379,8 @@ def to_html(md: str) -> str:
         if i + 2 < len(parts):
             lang = f' class="language-{parts[i + 1]}"' if parts[i + 1] else ""
             out.append(f"<pre><code{lang}>{html.escape(parts[i + 2].rstrip(), quote=False)}</code></pre>")
-    return "".join(out).strip()
+    result = "".join(out).strip()
+    return result if valid_html(result) else html.escape(md, quote=False)
 
 
 def split_md(md: str, size: int = CHUNK) -> list[str]:
@@ -143,11 +402,10 @@ def split_md(md: str, size: int = CHUNK) -> list[str]:
 
 
 def fit_md(md: str, size: int = CHUNK) -> list[str]:
-    """`split_md`, then halve any piece whose HTML would still be too long for one message
-    (escaping `<` and `&` and adding tags makes HTML longer than its Markdown)."""
+    """`split_md`, then halve any piece whose HTML would still be too long for one message."""
     out = []
     for piece in split_md(md, size):
-        if len(to_html(piece)) + 2 > MAX_HTML and size > 200:
+        if units(to_html(piece)) + 2 > MAX_UNITS and size > 200:
             out += fit_md(piece, max(200, len(piece) // 2))
         else:
             out.append(piece)
@@ -156,6 +414,16 @@ def fit_md(md: str, size: int = CHUNK) -> list[str]:
 
 def esc(text: str) -> str:
     return html.escape(str(text), quote=False)
+
+
+def clip(body: str, limit: int = MAX_UNITS) -> str:
+    """Cut HTML that is too long, closing it safely (the cut part becomes plain text)."""
+    if units(body) <= limit:
+        return body
+    text = strip_html(body)
+    while units(text) > limit - 2:
+        text = text[: int(len(text) * 0.9)]
+    return esc(text) + " …"
 
 
 # ---------------------------------------------------------------- one answer, drawn live
@@ -175,7 +443,8 @@ def result_text(name: str, output: str, ok: bool) -> str:
 
 class Turn:
     """What one answer looks like in the chat: Vesper's words stream into a message, and the
-    steps in between go into an activity message that grows as they happen."""
+    steps in between go into an activity message that grows as they happen. Nothing here may
+    raise into the agent: a message Telegram refuses is logged and the work goes on."""
 
     def __init__(self, bot: Bot, chat: Chat) -> None:
         self.bot, self.chat = bot, chat
@@ -197,7 +466,6 @@ class Turn:
         self.ticker = threading.Thread(target=self._tick, daemon=True, name="vesper-telegram-tick")
         self.ticker.start()
 
-    # events from Session.ask, the workspace and the approvals
     def event(self, kind: str, data: dict) -> None:
         with self.lock:
             if kind == "token":
@@ -217,13 +485,12 @@ class Turn:
                 if data["name"] in ("run_command", "run_check"):
                     body = "\n".join(data.get("output", "").splitlines()[1:])[-1500:].strip()
                     if body:
-                        self.steps[-1][2] = f"<blockquote expandable><pre>{esc(body)}</pre></blockquote>"
+                        self.steps[-1][2] = f"<blockquote expandable>{esc(body)}</blockquote>"
                 self.status, self.tail = "Thinking", []
             elif kind == "auto" and data.get("kind") == "edit" and self.steps:
                 diff = (data.get("diff") or "")[-2500:]
                 if diff.strip():
-                    self.steps[-1][2] = ('<blockquote expandable><pre><code class="language-diff">'
-                                         f"{esc(diff)}</code></pre></blockquote>")
+                    self.steps[-1][2] = f"<blockquote expandable>{esc(diff)}</blockquote>"
             elif kind == "output":
                 self.tail = [*self.tail, data["line"][:200]][-4:]
             elif kind == "tasks":
@@ -254,26 +521,24 @@ class Turn:
             if stopped:
                 end.append("⏹ Stopped.")
             if self.usage and not error:
-                from vesper.ui import fmt_cost, fmt_duration
+                from vesper.ui import fmt_duration
 
                 bits = [fmt_duration(self.usage["seconds"])]
                 if self.usage.get("tools"):
                     bits.append(f"{self.usage['tools']} step{'s' if self.usage['tools'] != 1 else ''}")
-                if self.usage.get("cost") is not None:
-                    bits.append(fmt_cost(self.usage["cost"]))
                 end.append("<i>◦ " + " · ".join(bits) + "</i>")
-            if end:
-                self._send("\n".join(end))
+            # the one message of a turn that notifies: the phone buzzes when the work is done
+            self._draw(None, "\n".join(end) or "<i>◦ done</i>", silent=False)
 
-    # drawing: a message Telegram refuses or a dropped connection must never stop the agent
+    # drawing
     def _send(self, body: str) -> int | None:
         return self._draw(None, body)
 
-    def _draw(self, message_id: int | None, body: str) -> int | None:
+    def _draw(self, message_id: int | None, body: str, silent: bool = True) -> int | None:
         try:
-            return self.bot.send_or_edit(self.chat.id, message_id, body)
+            return self.bot.send_or_edit(self.chat.id, message_id, body, silent=silent)
         except TelegramError as e:
-            self.bot.say(f"Telegram refused a message: {e}")
+            self.bot.log_error(f"Telegram refused a message: {e}")
             return message_id
 
     def _log_html(self) -> str:
@@ -289,7 +554,9 @@ class Turn:
                 rows.append(f"<i>⏳ {esc(self.status)}… {int(time.monotonic() - self.started)}s</i>")
             if self.tail:
                 rows.append("<pre>" + esc("\n".join(self.tail)) + "</pre>")
-        return "\n".join(rows)[-3900:]
+        while len(rows) > 1 and units("\n".join(rows)) > MAX_UNITS:  # the oldest steps make room
+            rows.pop(0)
+        return clip("\n".join(rows))
 
     def _flush(self, force: bool = False) -> None:
         if not force and time.monotonic() - self.last_edit < EDIT_EVERY_S:
@@ -356,101 +623,126 @@ class Chat:
 
 
 class Bot:
-    def __init__(self, api: Api, store, cfg: dict, folder: Path, pairing: bool = False, say=print) -> None:
+    def __init__(self, api: Api, store, cfg: dict, folder: Path, say=print) -> None:
         self.api, self.store, self.cfg, self.say = api, store, cfg, say
         self.folder = folder
         self.chats: dict[int, Chat] = {}
         self.approvals: dict[str, dict] = {}
-        self.code = f"{secrets.randbelow(10**6):06d}" if pairing or not self.allowed_users() else None
         self.offset = 0
         self.username = ""
-        self.wrong_codes = 0
+        self.started_at = time.time()
 
-    # settings
     def settings(self) -> dict:
-        from vesper.onboarding import load_config
-
-        raw = load_config().get("telegram")
-        return raw if isinstance(raw, dict) else {}
+        return load_settings()
 
     def allowed_users(self) -> list[int]:
-        return [int(u) for u in self.settings().get("allowed", []) if str(u).lstrip("-").isdigit()]
+        return allowed_users()
 
     def save(self, **values) -> None:
-        from vesper.onboarding import save_config
+        update_settings(lambda data: data.update(values))
 
-        save_config({"telegram": {**self.settings(), **values}})
+    def log_error(self, text: str) -> None:
+        self.say(text)
+        with contextlib.suppress(OSError):
+            save_state(last_error=text, last_error_at=time.time())
 
     # sending
-    def send(self, chat_id: int, body: str, buttons: list | None = None) -> int | None:
-        markup = {"inline_keyboard": buttons} if buttons else None
-        try:
-            return self.api.call("sendMessage", chat_id=chat_id, text=body or "…", parse_mode="HTML",
-                                 link_preview_options={"is_disabled": True}, reply_markup=markup)["message_id"]
-        except TelegramError as e:
-            if "parse" not in str(e).lower() and "tag" not in str(e).lower():
-                raise
-            plain = html.unescape(re.sub(r"<[^>]+>", "", body))[:4096] or "…"  # HTML it refused: send it plain
-            return self.api.call("sendMessage", chat_id=chat_id, text=plain, reply_markup=markup)["message_id"]
+    def send(self, chat_id: int, body: str, buttons: list | None = None, silent: bool = True) -> int | None:
+        return self.send_or_edit(chat_id, None, body, buttons, silent)
 
-    def send_or_edit(self, chat_id: int, message_id: int | None, body: str, buttons: list | None = None) -> int | None:
-        if message_id is None:
-            return self.send(chat_id, body, buttons)
+    def send_or_edit(self, chat_id: int, message_id: int | None, body: str, buttons: list | None = None,
+                     silent: bool = True) -> int | None:
+        body = clip(body or "…")
+        markup = {"inline_keyboard": buttons} if buttons else None
+        formatted = valid_html(body)
+        params = {"chat_id": chat_id, "text": body if formatted else strip_html(body),
+                  "parse_mode": "HTML" if formatted else None, "reply_markup": markup,
+                  "link_preview_options": {"is_disabled": True}}
         try:
-            self.api.call("editMessageText", chat_id=chat_id, message_id=message_id, text=body or "…",
-                          parse_mode="HTML", link_preview_options={"is_disabled": True},
-                          reply_markup={"inline_keyboard": buttons} if buttons else None)
+            if message_id is None:
+                return self.api.call("sendMessage", disable_notification=silent, **params)["message_id"]
+            self.api.call("editMessageText", message_id=message_id, **params)
+            return message_id
         except TelegramError as e:
-            if "not modified" in str(e):
+            text = str(e).lower()
+            if "not modified" in text:
                 return message_id
-            if "parse" not in str(e).lower() and "tag" not in str(e).lower():
+            if "parse" not in text and "entities" not in text:
                 raise
-            plain = html.unescape(re.sub(r"<[^>]+>", "", body))[:4096] or "…"
-            try:
-                self.api.call("editMessageText", chat_id=chat_id, message_id=message_id, text=plain)
-            except TelegramError:
-                pass
-        return message_id
+            # Telegram did not accept the HTML (and so did not deliver it): send the words plain
+            params.update(text=strip_html(body)[:4000] or "…", parse_mode=None)
+            if message_id is None:
+                return self.api.call("sendMessage", disable_notification=silent, **params)["message_id"]
+            self.api.call("editMessageText", message_id=message_id, **params)
+            return message_id
 
     def delete(self, chat_id: int, message_id: int) -> None:
-        try:
+        with contextlib.suppress(TelegramError):
             self.api.call("deleteMessage", chat_id=chat_id, message_id=message_id)
-        except TelegramError:
-            pass
+
+    def acknowledge(self, chat_id: int, message_id: int | None) -> None:
+        """👀 on the message and "typing…" at the top: Vesper got it."""
+        with contextlib.suppress(TelegramError):
+            if message_id:
+                self.api.call("setMessageReaction", chat_id=chat_id, message_id=message_id,
+                              reaction=[{"type": "emoji", "emoji": "👀"}])
+            self.api.call("sendChatAction", chat_id=chat_id, action="typing")
 
     # the loop
     def start(self) -> None:
-        self.username = self.api.call("getMe").get("username", "")
-        self.api.call("setMyCommands", commands=[
-            {"command": c, "description": d} for c, d in (
-                ("new", "Start a new conversation"), ("resume", "Go back to an earlier conversation"),
-                ("stop", "Stop what Vesper is doing"), ("mode", "How much Vesper asks first"),
-                ("cd", "Work in another folder"), ("undo", "Put back the last change"),
-                ("status", "Model, folder and conversation"), ("help", "What you can do"))])
-        if self.code:
-            self.say(f"Pair your Telegram account: open https://t.me/{self.username} and send   /start {self.code}")
-        else:
-            self.say(f"Vesper is on Telegram as @{self.username}, working in {self.folder}. Stop with Ctrl+C.")
+        me = self.api.call("getMe")
+        self.username = me.get("username", "")
+        with contextlib.suppress(TelegramError):
+            self.api.call("deleteWebhook")  # a webhook set elsewhere would block getUpdates
+        self.api.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in COMMANDS])
+        self.offset = int(load_state().get("offset") or 0)
+        save_state(username=self.username, pid=os.getpid(), started=time.time(), heartbeat=time.time(),
+                   last_error=None)
+        self.say(f"Vesper is on Telegram as @{self.username}, working in {self.folder}.")
 
     def run(self, stop: threading.Event | None = None) -> None:
-        self.start()
-        while stop is None or not stop.is_set():
-            try:
-                updates = self.api.call("getUpdates", offset=self.offset, timeout=POLL_S,
-                                        allowed_updates=["message", "callback_query"])
-            except TelegramError as e:
-                if "conflict" in str(e).lower():
-                    raise TelegramError("Another Vesper is already connected to this bot. Stop it first "
-                                        "(vesper telegram --stop stops the one in the background).") from e
-                self.say(f"Telegram: {e}. Trying again.")
-                time.sleep(5)
-                continue
-            for update in updates:
-                self.offset = update["update_id"] + 1
+        lock = PollerLock()
+        try:
+            lock.acquire()
+        except AlreadyRunning as e:
+            raise TelegramError(f"The Telegram bot is already running (process {e.args[0]}). "
+                                "Type /telegram in Vesper to see it.") from None
+        try:
+            self.start()
+            conflicts = 0
+            while stop is None or not stop.is_set():
                 try:
-                    self.handle(update)
-                except Exception as e:  # noqa: BLE001 - one bad update must not stop the bot
-                    self.say(f"Could not handle a Telegram update: {e}")
+                    updates = self.api.call("getUpdates", offset=self.offset, timeout=POLL_S,
+                                            allowed_updates=["message", "callback_query"])
+                    conflicts = 0
+                except TelegramError as e:
+                    if e.code == 409 or "conflict" in str(e).lower():
+                        if conflicts == len(CONFLICT_WAITS):
+                            raise TelegramError(
+                                "Another program is reading this bot's messages (Telegram says 'Conflict'). "
+                                "Only one can. Stop the other one, or make a new token with /revoke in "
+                                "@BotFather and set it up again with /telegram setup.") from e
+                        self.log_error(f"Telegram: another program uses this bot; trying again in "
+                                       f"{CONFLICT_WAITS[conflicts]}s.")
+                        time.sleep(CONFLICT_WAITS[conflicts])
+                        conflicts += 1
+                        continue
+                    if e.code == 401:
+                        raise TelegramError("Telegram no longer accepts this bot's token. Set it up again "
+                                            "with /telegram setup.") from e
+                    self.log_error(f"Telegram: {e}. Trying again.")
+                    time.sleep(5)
+                    continue
+                save_state(heartbeat=time.time())
+                for update in updates:
+                    self.offset = update["update_id"] + 1
+                    save_state(offset=self.offset)  # before handling: a crash never runs it twice
+                    try:
+                        self.handle(update)
+                    except Exception as e:  # noqa: BLE001 - one bad update must not stop the bot
+                        self.log_error(f"Could not handle a Telegram update: {e}")
+        finally:
+            lock.release()
 
     def handle(self, update: dict) -> None:
         if "callback_query" in update:
@@ -458,41 +750,97 @@ class Bot:
         msg = update.get("message") or {}
         user = (msg.get("from") or {}).get("id")
         chat_id = (msg.get("chat") or {}).get("id")
-        text = (msg.get("text") or msg.get("caption") or "").strip()
         if user is None or chat_id is None:
             return
         if user not in self.allowed_users():
-            return self.pair(user, chat_id, msg, text)
-        if not text:
-            self.send(chat_id, "Vesper reads text messages. Photos, voice notes and files are not supported yet.")
+            return self.request_pairing(user, chat_id, msg)
+        if msg.get("date") and msg["date"] < self.started_at - OFFLINE_AFTER_S:
+            self.send(chat_id, "💤 Vesper was offline when you sent this, so it did not run it. "
+                               "Send it again if you still want it.", silent=False)
             return
+        text = (msg.get("text") or msg.get("caption") or "").strip()
         chat = self.chat(chat_id)
         if text.startswith("/"):
             cmd, _, arg = text.partition(" ")
             return self.command(chat, cmd.split("@")[0].lower(), arg.strip())
+        if self.typed_answer(chat, text):
+            return
+        self.acknowledge(chat_id, msg.get("message_id"))
+        try:
+            files, images = self.receive_files(msg)
+        except TelegramError as e:
+            self.send(chat_id, f"⚠️ {esc(str(e))}")
+            return
+        if not (text or files or images):
+            self.send(chat_id, "Vesper reads text, photos and files. Voice notes and stickers are not "
+                               "supported yet; type the message instead.")
+            return
+        if files:
+            text = (text or "Look at the attached file.") + "\n\n" + "\n".join(
+                f"[The user sent a file over Telegram; it is saved at {p}]" for p in files)
         if chat.busy:
             if chat.session.steer(text):
                 self.send(chat_id, "➕ Added to what Vesper is doing.")
             else:
                 self.send(chat_id, "Vesper is still working. Send /stop to stop it first.")
             return
-        self.run_turn(chat, text)
+        self.run_turn(chat, text or "Look at the attached image.", images)
 
-    def pair(self, user: int, chat_id: int, msg: dict, text: str) -> None:
-        if self.code and text.replace("/start", "").strip() == self.code:
-            self.save(allowed=[*self.allowed_users(), user])
-            self.code = None  # one pairing per code: nobody else can join with it
-            name = (msg.get("from") or {}).get("first_name") or "there"
-            self.say(f"Paired with {name} on Telegram.")
-            self.send(chat_id, f"✨ Paired. Hi {esc(name)}!\n\n" + HELP.format(folder=esc(str(self.folder))))
+    def receive_files(self, msg: dict) -> tuple[list[str], list[dict]]:
+        """Photos become images for the model; documents are saved in the inbox."""
+        from vesper.attachments import IMAGE_TYPES, MAX_IMAGE_BYTES, image_block
+
+        files, images = [], []
+        if msg.get("photo"):
+            data, path = self.api.download(msg["photo"][-1]["file_id"])
+            if len(data) <= MAX_IMAGE_BYTES:
+                images.append(image_block(data, "image/jpeg", Path(path).name))
+            else:
+                files.append(str(self._save(data, Path(path).name)))
+        doc = msg.get("document")
+        if doc:
+            name = re.sub(r"[^\w.\- ]", "_", doc.get("file_name") or "file")[:120] or "file"
+            data, _ = self.api.download(doc["file_id"])
+            mime = IMAGE_TYPES.get(Path(name).suffix.lower())
+            if mime and len(data) <= MAX_IMAGE_BYTES:
+                images.append(image_block(data, mime, name))
+            else:
+                files.append(str(self._save(data, name)))
+        return files, images
+
+    def _save(self, data: bytes, name: str) -> Path:
+        inbox = home() / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        path = inbox / f"{time.strftime('%Y%m%d-%H%M%S')}-{name}"
+        path.write_bytes(data)
+        return path
+
+    def request_pairing(self, user: int, chat_id: int, msg: dict) -> None:
+        sender = msg.get("from") or {}
+        name = " ".join(filter(None, (sender.get("first_name"), sender.get("last_name")))) or "someone"
+        if sender.get("username"):
+            name += f" (@{sender['username']})"
+        code: list[str] = []
+
+        def change(data: dict) -> None:
+            now = time.time()
+            data["pending"] = [p for p in data["pending"] if p["expires"] > now]
+            for p in data["pending"]:
+                if p["user"] == user:
+                    code.append(p["code"])
+                    return
+            if len(data["pending"]) < MAX_PENDING:
+                code.append(new_code())
+                data["pending"].append({"code": code[0], "user": user, "chat": chat_id, "name": name,
+                                        "expires": now + CODE_TTL_S})
+
+        update_settings(change)
+        if not code:
+            self.send(chat_id, "🔒 This Vesper bot is private.")
             return
-        if self.code and text.startswith("/start "):
-            self.wrong_codes += 1
-            if self.wrong_codes >= MAX_WRONG_CODES:  # someone is guessing: the code stops working
-                self.code = None
-                self.say("Too many wrong pairing codes. Run `vesper telegram --pair` for a new one.")
-        self.send(chat_id, "🔒 This Vesper bot is private. Its owner pairs a Telegram account from their "
-                           "computer with <code>vesper telegram --pair</code>.")
+        self.say(f"{name} asked to use the Telegram bot. To allow it, type in Vesper:  /telegram approve {code[0]}")
+        self.send(chat_id, "🔒 This Vesper bot is private.\n\nIf it is yours, type this in Vesper on your "
+                           f"computer:\n<code>/telegram approve {code[0]}</code>\n(the code works for one hour)")
 
     # conversations
     def chat(self, chat_id: int) -> Chat:
@@ -528,14 +876,14 @@ class Bot:
         chat.session.small_llm = make_small_llm(self.cfg)
         chat.session.switcher = make_switcher(self.cfg)
 
-    def run_turn(self, chat: Chat, text: str) -> None:
+    def run_turn(self, chat: Chat, text: str, images: list | None = None) -> None:
         chat.stop.clear()
         turn = chat.turn = Turn(self, chat)
 
         def work() -> None:
             from vesper.tui import friendly
 
-            gen = chat.session.ask(text, shown=text)
+            gen = chat.session.ask(text, shown=text, images=images or None)
             error = None
             try:
                 for kind, data in gen:
@@ -553,7 +901,7 @@ class Bot:
         chat.worker = threading.Thread(target=work, daemon=True, name="vesper-telegram-turn")
         chat.worker.start()
 
-    # approvals: asked from the agent's thread, answered by a button
+    # approvals: asked from the agent's thread, answered by a button or a typed yes / no
     def approve(self, chat: Chat, action: dict) -> str:
         aid = secrets.token_hex(6)
         slot = {"event": threading.Event(), "answer": "no", "chat": chat.id}
@@ -562,14 +910,14 @@ class Bot:
         if kind == "edit":
             head = ("📝 <b>Create " if action.get("new") else "✏️ <b>Edit ") + f"{esc(action.get('path', ''))}?</b>"
             diff = (action.get("diff") or "")[:3000]
-            body = head + (f'\n<pre><code class="language-diff">{esc(diff)}</code></pre>' if diff.strip() else "")
+            body = head + (f"\n<pre>{esc(diff)}</pre>" if diff.strip() else "")
             always = "Always for edits"
         elif kind == "web":
             body = f"🌐 <b>Open this page?</b>\n{esc(action.get('url', ''))}"
             always = f"Always for {rule}" if rule else "Always"
         elif kind == "mcp":
             body = (f"🧩 <b>Use {esc(action.get('mcp_tool', ''))}</b> from {esc(action.get('server', ''))}?\n"
-                    f"<pre>{esc(action.get('args', ''))[:2000]}</pre>")
+                    f"<pre>{esc(str(action.get('args', ''))[:2000])}</pre>")
             always = "Always for this tool"
         else:
             body = (f"▶️ <b>Run this command?</b>\n<pre>$ {esc(action.get('command', ''))}</pre>\n"
@@ -583,27 +931,43 @@ class Bot:
         buttons = [row, [{"text": "✖ No", "callback_data": f"ap:{aid}:no"}]]
         if chat.turn:
             chat.turn.wait_for_user(True)
-        slot["message"] = self.send(chat.id, body, buttons)
+        try:
+            slot["message"] = self.send(chat.id, body, buttons, silent=False)
+        except TelegramError as e:
+            self.log_error(f"Could not ask for approval: {e}")
+            self.approvals.pop(aid, None)
+            return "no"
         answered = slot["event"].wait(APPROVAL_TIMEOUT_S)
         self.approvals.pop(aid, None)
         if chat.turn:
             chat.turn.wait_for_user(False)
         answer = slot["answer"] if answered and not chat.stop.is_set() else "no"
         label = {"yes": "✅ Allowed", "always": "♾ Allowed from now on", "no": "✖ Declined"}[answer]
-        try:
+        with contextlib.suppress(TelegramError):
             self.send_or_edit(chat.id, slot["message"], body + f"\n\n<b>{label}</b>")
-        except TelegramError:
-            pass
         return answer
+
+    def typed_answer(self, chat: Chat, text: str) -> bool:
+        """"yes" / "no" / "always" typed while a question is open answers it."""
+        word = text.lower().strip(" .!")
+        answer = {"yes": "yes", "y": "yes", "ok": "yes", "no": "no", "n": "no", "always": "always"}.get(word)
+        slots = [s for s in self.approvals.values() if s["chat"] == chat.id]
+        if not answer or not slots:
+            return False
+        slots[-1]["answer"] = answer
+        slots[-1]["event"].set()
+        return True
 
     def on_button(self, query: dict) -> None:
         user = (query.get("from") or {}).get("id")
         data = query.get("data") or ""
         chat_id = ((query.get("message") or {}).get("chat") or {}).get("id")
         if user not in self.allowed_users() or chat_id is None:
-            self.api.call("answerCallbackQuery", callback_query_id=query["id"], text="This bot is private.")
+            with contextlib.suppress(TelegramError):
+                self.api.call("answerCallbackQuery", callback_query_id=query["id"], text="This bot is private.")
             return
-        self.api.call("answerCallbackQuery", callback_query_id=query["id"])
+        with contextlib.suppress(TelegramError):
+            self.api.call("answerCallbackQuery", callback_query_id=query["id"])
         kind, _, rest = data.partition(":")
         if kind == "ap":
             aid, _, answer = rest.partition(":")
@@ -611,6 +975,8 @@ class Bot:
             if slot is not None and slot["chat"] == chat_id and answer in ("yes", "always", "no"):
                 slot["answer"] = answer
                 slot["event"].set()
+            elif slot is None:
+                self.send(chat_id, "That question is closed already.")
         elif kind == "rs":
             self.resume(self.chat(chat_id), rest)
         elif kind == "md":
@@ -664,6 +1030,7 @@ class Bot:
                 f"📂 <b>Folder</b> <code>{esc(str(chat.workspace.root))}</code>",
                 f"🛡 <b>Mode</b> {esc(chat.workspace.mode)}",
                 f"💬 <b>Conversation</b> {esc(s.title or 'new')} · {len(s.history)} messages",
+                f"{'⏳ <b>Working</b>' if chat.busy else '💤 <b>Idle</b>'}",
             ]))
         else:
             self.send(chat.id, f"Unknown command {esc(cmd)}. /help lists what you can do.")
@@ -734,10 +1101,10 @@ def history_messages(messages: list, max_turns: int = 10) -> list[str]:
             body += f" <i>· {len(steps)} step{'s' if len(steps) != 1 else ''}</i>"
         if words:
             body += "\n" + to_html(words[:1500] + ("…" if len(words) > 1500 else ""))
-        blocks.append(body)
+        blocks.append(clip(body, 3800))
     out, cur = [], ""
     for b in blocks:
-        if len(cur) + len(b) > 3800 and cur:
+        if units(cur) + units(b) > 3800 and cur:
             out.append(cur)
             cur = ""
         cur += ("\n\n" if cur else "") + b
@@ -746,16 +1113,26 @@ def history_messages(messages: list, max_turns: int = 10) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------- running it in the background (macOS)
+# ---------------------------------------------------------------- the background service
 LABEL = "dev.vesper.telegram"
+UNIT = "vesper-telegram.service"
 
 
 def plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 
-def plist_text(program: list[str], log: Path) -> str:
-    args = "\n".join(f"    <string>{html.escape(a)}</string>" for a in program)
+def unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / UNIT
+
+
+def program(folder: Path) -> list[str]:
+    exe = shutil.which("vesper") or sys.argv[0]
+    return [exe, "telegram", "run", "--folder", str(folder)]
+
+
+def plist_text(args: list[str], log: Path) -> str:
+    items = "\n".join(f"    <string>{html.escape(a)}</string>" for a in args)
     path = html.escape(os.environ.get("PATH", "/usr/bin:/bin"))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -764,11 +1141,12 @@ def plist_text(program: list[str], log: Path) -> str:
   <key>Label</key><string>{LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-{args}
+{items}
   </array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string><key>PYTHONUNBUFFERED</key><string>1</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>{html.escape(str(log))}</string>
   <key>StandardErrorPath</key><string>{html.escape(str(log))}</string>
 </dict>
@@ -776,137 +1154,376 @@ def plist_text(program: list[str], log: Path) -> str:
 """
 
 
-def running_in_background() -> bool:
-    import subprocess
+def unit_text(args: list[str], log: Path) -> str:
+    cmd = " ".join(f'"{a}"' if " " in a else a for a in args)
+    return f"""[Unit]
+Description=Vesper Telegram bot
+After=network-online.target
 
-    if sys.platform != "darwin":
-        return False
-    done = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], capture_output=True, text=True)
-    return done.returncode == 0 and "state = running" in done.stdout
+[Service]
+ExecStart={cmd}
+Environment=PATH={os.environ.get("PATH", "/usr/bin:/bin")}
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+StandardOutput=append:{log}
+StandardError=append:{log}
 
-
-def status() -> dict:
-    """What `/telegram` shows: is the bot set up, paired, running."""
-    from vesper import providers as prov
-
-    prov.refresh_keys()
-    if not os.environ.get(TOKEN_KEY, "").strip():
-        return {"running": False, "text": "not set up yet",
-                "hints": ["In a normal terminal window, run  vesper telegram  and follow the steps (about a minute)."]}
-    if not Bot(None, None, {}, Path.cwd()).allowed_users():
-        return {"running": False, "text": "set up, not paired yet",
-                "hints": ["In a normal terminal window, run  vesper telegram  and send the code it shows to your bot."]}
-    if running_in_background():
-        return {"running": True, "text": "running in the background",
-                "hints": ["Send it messages from Telegram. Its conversations are in /resume here too.",
-                          "/telegram off stops it."]}
-    return {"running": False, "text": "set up and paired, not running",
-            "hints": ["/telegram on starts it in the background (it keeps running after a restart).",
-                      "Or run  vesper telegram  in a normal terminal window to keep it there."]}
-
-
-def background(on: bool, folder: Path) -> int:
-    import subprocess
-
-    from vesper.onboarding import home
-    from vesper.ui import note
-
-    if sys.platform != "darwin":
-        note("Running in the background is set up on macOS only. Elsewhere, keep `vesper telegram` running "
-             "(for example in tmux or as a systemd service).")
-        return 1
-    domain = f"gui/{os.getuid()}"
-    path = plist_path()
-    subprocess.run(["launchctl", "bootout", domain, str(path)], capture_output=True)
-    if not on:
-        path.unlink(missing_ok=True)
-        note("The Telegram bot no longer runs in the background.")
-        return 0
-    exe = shutil.which("vesper") or sys.argv[0]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(plist_text([exe, "telegram", "--folder", str(folder)], home() / "telegram.log"))
-    done = subprocess.run(["launchctl", "bootstrap", domain, str(path)], capture_output=True, text=True)
-    if done.returncode != 0:
-        note(f"Could not start it in the background: {done.stderr.strip()}")
-        return 1
-    note(f"The Telegram bot now runs in the background and starts again when you log in. Log: {home() / 'telegram.log'}")
-    note("Stop it with: vesper telegram --stop")
-    return 0
-
-
-# ---------------------------------------------------------------- vesper telegram
-SETUP = """
-  Connect Vesper to Telegram (about one minute):
-    1. In Telegram, open  https://t.me/BotFather  and send  /newbot
-    2. Pick a name (for example "My Vesper") and a username that ends in "bot"
-    3. BotFather replies with a token like 123456789:AAE...  Copy it.
+[Install]
+WantedBy=default.target
 """
 
 
-def get_token(interactive: bool) -> str | None:
+def _run(args: list[str]):
+    import subprocess
+
+    return subprocess.run(args, capture_output=True, text=True)
+
+
+def service_installed() -> bool:
+    return plist_path().exists() if sys.platform == "darwin" else unit_path().exists()
+
+
+def service_running() -> bool:
+    if sys.platform == "darwin":
+        done = _run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"])
+        return done.returncode == 0 and "state = running" in done.stdout
+    if sys.platform.startswith("linux") and shutil.which("systemctl"):
+        return _run(["systemctl", "--user", "is-active", UNIT]).stdout.strip() == "active"
+    return False
+
+
+def stop_service() -> None:
+    """Stops and removes the login service, and waits until its poller has let go of the lock."""
+    if sys.platform == "darwin":
+        _run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist_path())])
+        plist_path().unlink(missing_ok=True)
+    elif sys.platform.startswith("linux") and shutil.which("systemctl"):
+        _run(["systemctl", "--user", "disable", "--now", UNIT])
+        unit_path().unlink(missing_ok=True)
+        _run(["systemctl", "--user", "daemon-reload"])
+    wait_until_free(15)
+
+
+def start_service(folder: Path) -> str | None:
+    """Installs the bot as a login service and starts it. Returns why it failed, or None."""
+    log = log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    args = program(folder)
+    holder = lock_holder()
+    if holder and not service_running():
+        return (f"A Vesper Telegram bot is already running in a terminal (process {holder}). "
+                "Close it (Ctrl+C in that window) and try again.")
+    if sys.platform == "darwin":
+        _run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist_path())])
+        wait_until_free(15)
+        plist_path().parent.mkdir(parents=True, exist_ok=True)
+        plist_path().write_text(plist_text(args, log))
+        done = _run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path())])
+        if done.returncode != 0:
+            return f"macOS did not start it: {done.stderr.strip() or done.returncode}"
+    elif sys.platform.startswith("linux") and shutil.which("systemctl"):
+        unit_path().parent.mkdir(parents=True, exist_ok=True)
+        unit_path().write_text(unit_text(args, log))
+        _run(["systemctl", "--user", "daemon-reload"])
+        done = _run(["systemctl", "--user", "enable", "--now", UNIT])
+        if done.returncode != 0:
+            return f"systemd did not start it: {done.stderr.strip() or done.returncode}"
+    else:
+        return ("Running in the background is set up on macOS and Linux. Here, keep  vesper telegram run  "
+                "open in a terminal.")
+    started = time.time()  # wait for its first heartbeat, so "on" means it really answers
+    while time.time() - started < 20:
+        if (load_state().get("heartbeat") or 0) >= started and lock_holder():
+            return None
+        time.sleep(0.5)
+    return f"It did not come up within 20 seconds. The log may say why: {log}"
+
+
+# ---------------------------------------------------------------- health: what /telegram shows
+def status(check_token: bool = True) -> dict:
+    """Every part of the bot, each with a state: ok, warn or off. `summary` is one line."""
     from vesper import providers as prov
-    from vesper.ui import console, note
 
     prov.refresh_keys()
     token = os.environ.get(TOKEN_KEY, "").strip()
-    if token:
-        return token
-    if not interactive:
-        note(f"No Telegram bot token yet. Run `vesper telegram` once in a terminal to connect it ({TOKEN_KEY}).")
-        return None
-    console.print(SETUP)
-    while True:
+    rows: list[tuple[str, str, str]] = []
+    out = {"configured": bool(token), "paired": False, "running": False, "rows": rows, "hints": []}
+    if not token:
+        out["summary"] = "not set up yet"
+        out["hints"].append("Type /telegram setup to connect it (about one minute).")
+        return out
+    username = load_state().get("username") or ""
+    if check_token:
         try:
-            token = input("  Paste the token here: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print()
-            return None
-        if not token:
-            return None
+            username = Api(token).call("getMe").get("username", "")
+            rows.append(("Bot", f"@{username}", "ok"))
+        except TelegramError as e:
+            rows.append(("Bot", f"token refused: {e}" if e.code == 401 else f"cannot check: {e}",
+                         "warn" if e.code != 401 else "off"))
+            if e.code == 401:
+                out["hints"].append("Make a new token with /token in @BotFather, then /telegram setup.")
+    settings = load_settings()
+    names = [settings["names"].get(str(u)) or str(u) for u in settings["allowed"]]
+    out["paired"] = bool(names)
+    rows.append(("Paired", ", ".join(names) if names else "nobody yet", "ok" if names else "off"))
+    pending = [p for p in settings["pending"] if p["expires"] > time.time()]
+    for p in pending:
+        rows.append(("Waiting", f"{p['name']}: /telegram approve {p['code']}", "warn"))
+    holder = lock_holder()
+    service = service_running()
+    state = load_state()
+    beat = time.time() - float(state.get("heartbeat") or 0)
+    out["running"] = bool(holder) and beat < STALE_HEARTBEAT_S
+    if service and out["running"]:
+        rows.append(("Running", "in the background, starts again when you log in", "ok"))
+    elif holder and out["running"]:
+        rows.append(("Running", f"in a terminal window (process {holder})", "ok"))
+    elif holder:
+        rows.append(("Running", f"started, but silent for {int(beat)}s: no connection to Telegram?", "warn"))
+    else:
+        rows.append(("Running", "no", "off"))
+    if state.get("last_error") and time.time() - float(state.get("last_error_at") or 0) < 3600:
+        rows.append(("Last problem", str(state["last_error"])[:160], "warn"))
+    rows.append(("Folder", settings.get("folder") or "the folder where it was started", "ok"))
+    rows.append(("Log", str(log_path()), "ok"))
+    if not names:
+        out["summary"] = "set up, not paired yet"
+        out["hints"].append("Type /telegram setup to pair your Telegram account.")
+    elif not out["running"]:
+        out["summary"] = "set up, not running"
+        out["hints"].append("Type /telegram on to start it.")
+    else:
+        out["summary"] = f"running as @{username}" if username else "running"
+        out["hints"].append("It answers while this computer is awake; a sleeping Mac cannot answer.")
+        out["hints"].append("/telegram off stops it.")
+    return out
+
+
+# ---------------------------------------------------------------- the guided setup
+SETUP_INTRO = """
+  Connect Vesper to Telegram. You need a bot of your own, which takes a minute:
+    1. In Telegram, open  https://t.me/BotFather  (the real one has a blue check mark)
+    2. Send  /newbot , pick a name, then a username ending in "bot"
+    3. BotFather answers with a token like  123456789:AAE...  Copy it.
+"""
+
+
+def setup(ask, confirm, say, folder: Path) -> bool:
+    """The whole setup, start to finish: token, pairing, background service.
+    `ask(prompt, secret)` reads a line (None to give up), `confirm(prompt)` a yes or no."""
+    from vesper import providers as prov
+
+    prov.refresh_keys()
+    token = os.environ.get(TOKEN_KEY, "").strip()
+    me = None
+    if token:
         try:
             me = Api(token).call("getMe")
         except TelegramError as e:
-            note(f"Telegram did not accept that token ({e}). Copy it again from BotFather.")
-            continue
+            say(f"The saved token does not work ({e}). Paste a new one.")
+            token = ""
+    if token and me and not confirm(f"Use your bot @{me.get('username')}?"):
+        token, me = "", None
+    if not token:
+        say(SETUP_INTRO)
+        while True:
+            token = (ask("Paste the token here (Enter to cancel): ", True) or "").strip()
+            if not token:
+                say("Setup cancelled. Nothing was changed.")
+                return False
+            if not re.fullmatch(r"\d+:[\w-]{30,}", token):
+                say("That does not look like a bot token (it is digits, a colon, then about 35 letters). Try again.")
+                continue
+            try:
+                me = Api(token).call("getMe")
+            except TelegramError as e:
+                say(f"Telegram did not accept it ({e}). Copy the token from BotFather again.")
+                continue
+            break
         prov.save_user_settings({TOKEN_KEY: token})
-        note(f"Saved. Your bot is @{me.get('username')}.")
-        return token
+    username = me.get("username", "")
+    say(f"✓ Connected to @{username}.")
+    stop_service()  # the setup reads the bot's messages itself for a moment
+    if lock_holder():
+        say("A Vesper Telegram bot is running in a terminal window. Close it (Ctrl+C there) and try again.")
+        return False
+    if not allowed_users():
+        if not pair_owner(Api(token), username, confirm, say):
+            return False
+    if (problem := start_service(folder)) is not None:
+        say(problem)
+        say("You can still run it in a terminal window:  vesper telegram run")
+        return False
+    say(f"✓ The bot is running in the background and starts again when you log in. Talk to it at "
+        f"https://t.me/{username}")
+    say("  It works while this computer is awake. Type /telegram any time to see how it is doing.")
+    return True
 
 
+def pair_owner(api: Api, username: str, confirm, say) -> bool:
+    """Waits for the owner's first message to the bot and asks here whether it is really them."""
+    lock = PollerLock()
+    try:
+        lock.acquire()
+    except AlreadyRunning:
+        say("Another Vesper is reading this bot's messages. Close it and try again.")
+        return False
+    try:
+        with contextlib.suppress(TelegramError):
+            api.call("deleteWebhook")
+        old = api.call("getUpdates", offset=-1, timeout=0)  # skip whatever was sent before
+        offset = old[-1]["update_id"] + 1 if old else 0
+        say(f"Now open  https://t.me/{username}  on your phone and tap Start (or send it any message).")
+        end = time.monotonic() + SETUP_WAIT_S
+        while time.monotonic() < end:
+            updates = api.call("getUpdates", offset=offset, timeout=20, allowed_updates=["message"])
+            for update in updates:
+                offset = update["update_id"] + 1
+                msg = update.get("message") or {}
+                sender, chat = msg.get("from") or {}, msg.get("chat") or {}
+                if not sender.get("id") or sender.get("is_bot"):
+                    continue
+                name = " ".join(filter(None, (sender.get("first_name"), sender.get("last_name")))) or "someone"
+                if sender.get("username"):
+                    name += f" (@{sender['username']})"
+                if not confirm(f"{name} wrote to the bot. Is that you?"):
+                    api.call("sendMessage", chat_id=chat["id"], text="🔒 This Vesper bot is private.")
+                    continue
+                user = sender["id"]
+
+                def change(data: dict, user=user, name=name) -> None:
+                    if user not in data["allowed"]:
+                        data["allowed"].append(user)
+                    data["names"][str(user)] = name
+
+                update_settings(change)
+                api.call("getUpdates", offset=offset, timeout=0)  # mark it read, so the bot does not run it
+                save_state(offset=offset)
+                api.call("sendMessage", chat_id=chat["id"], parse_mode="HTML",
+                         text="✨ <b>Paired.</b> This bot now works only for you.")
+                say(f"✓ Paired with {name}.")
+                return True
+        say("Nobody wrote to the bot within 5 minutes. Run the setup again when you are ready.")
+        return False
+    finally:
+        lock.release()
+
+
+# ---------------------------------------------------------------- vesper telegram
 def command(argv: list[str]) -> int:
     import argparse
 
     from vesper.tui import load_config, open_store
-    from vesper.ui import apply_theme, err_console, note
+    from vesper.ui import apply_theme, console, err_console, note
 
-    ap = argparse.ArgumentParser(prog="vesper telegram", description="Use Vesper from Telegram.")
+    ap = argparse.ArgumentParser(
+        prog="vesper telegram", description="Use Vesper from Telegram.",
+        epilog="Inside Vesper, /telegram does the same: /telegram setup, on, off, approve CODE.")
+    ap.add_argument("action", nargs="?", default="", choices=["", "setup", "on", "off", "status", "run", "approve"],
+                    help="setup (connect and pair), on / off (background service), status, run (in this window)")
+    ap.add_argument("code", nargs="?", help="the pairing code, for approve")
     ap.add_argument("--folder", help="the folder Vesper works in (default: the current one)")
-    ap.add_argument("--pair", action="store_true", help="show a code to pair another Telegram account")
-    ap.add_argument("--background", action="store_true", help="keep the bot running, also after a restart (macOS)")
-    ap.add_argument("--stop", action="store_true", help="stop the bot running in the background")
+    ap.add_argument("--background", action="store_true", help=argparse.SUPPRESS)  # 0.22.0 names
+    ap.add_argument("--stop", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--pair", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     cfg = load_config()
     apply_theme(cfg.get("theme"))
     folder = Path(args.folder).expanduser().resolve() if args.folder else Path.cwd().resolve()
-    if args.stop:
-        return background(False, folder)
-    token = get_token(sys.stdin.isatty())
-    if not token:
-        return 1
+    action = "off" if args.stop else "on" if args.background else "setup" if args.pair else args.action
+    tty = sys.stdin.isatty()
+    if not action:  # the plain command does what the situation needs
+        state = status(check_token=False)
+        action = "setup" if tty and not (state["configured"] and state["paired"]) else \
+            "status" if tty and state["running"] else "run"
+    if action == "off":
+        stop_service()
+        note("The Telegram bot is off.")
+        return 0
+    if action == "status":
+        show_status(console)
+        return 0
+    if action == "approve":
+        who = approve_code(args.code or "")
+        note(f"Paired with {who['name']}." if who else "No pairing request has that code (codes last one hour).")
+        return 0 if who else 1
     if not cfg.get("provider") and not os.environ.get("VESPER_FAKE_LLM"):
-        note("Pick a model first: run `vesper` once in a terminal.")
+        note("Pick a model first: run  vesper  once and follow the steps.")
         return 1
-    if args.background:
-        if not Bot(Api(token), None, cfg, folder).allowed_users():
-            note("Pair your Telegram account first: run `vesper telegram` once and send the code to your bot.")
+    if action == "setup":
+        if not tty:
+            note("The setup asks you questions; run it in a terminal window:  vesper telegram setup")
             return 1
-        return background(True, folder)
-    bot = Bot(Api(token), open_store(), cfg, folder, pairing=args.pair, say=note)
+        return 0 if setup(_ask, _confirm, printer(console), folder) else 1
+    if action == "on":
+        state = status(check_token=False)
+        if not (state["configured"] and state["paired"]):
+            note("Set it up first:  vesper telegram setup")
+            return 1
+        problem = start_service(Path(load_settings().get("folder") or folder))
+        note(problem or "The Telegram bot is on, in the background.")
+        return 1 if problem else 0
+    # run: in this window (this is also what the background service runs)
+    from vesper import providers as prov
+
+    prov.refresh_keys()
+    token = os.environ.get(TOKEN_KEY, "").strip()
+    if not token:
+        note("No Telegram bot yet. Set it up:  vesper telegram setup")
+        return 1
+    bot = Bot(Api(token), open_store(), cfg, Path(load_settings().get("folder") or folder),
+              say=lambda s: print(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {s}", flush=True))
     try:
         bot.run()
     except KeyboardInterrupt:
         note("Telegram bot stopped.")
     except TelegramError as e:
-        err_console.print(str(e))
+        err_console.print(f"{e}\nLog: {log_path()}")
+        with contextlib.suppress(OSError):
+            save_state(last_error=str(e), last_error_at=time.time())
+        if "already running" in str(e):
+            return 0  # nothing wrong: the other one answers
+        time.sleep(30 if not tty else 0)  # a service that cannot work should not restart in a tight loop
         return 1
     return 0
+
+
+def _ask(prompt: str, secret: bool = False) -> str | None:
+    from prompt_toolkit import prompt as pt_prompt
+
+    try:
+        return pt_prompt("  " + prompt, is_password=secret)
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+
+def _confirm(prompt: str) -> bool:
+    answer = _ask(f"{prompt} [Y/n] ")
+    return answer is not None and answer.strip().lower() in ("", "y", "yes")
+
+
+def printer(console):
+    """How the setup talks in a terminal: indented like Vesper's other notes, never read as markup."""
+    from rich.text import Text
+
+    def say(text: str) -> None:
+        console.print(Text(text if text.startswith((" ", "\n")) else "  " + text))
+
+    return say
+
+
+def show_status(console) -> dict:
+    from rich.text import Text
+
+    from vesper import ui
+
+    state = status()
+    color = {"ok": ui.OK, "warn": ui.WARN, "off": ui.MUTED}
+    console.print(Text.assemble(("  Telegram  ", f"bold {ui.TEXT}"),
+                                (state["summary"], ui.OK if state["running"] else ui.WARN)))
+    for label, value, kind in state["rows"]:
+        console.print(Text.assemble(("    " + label.ljust(13), ui.MUTED), (value, color[kind])))
+    for hint in state["hints"]:
+        console.print(Text("  " + hint, style=ui.MUTED))
+    return state

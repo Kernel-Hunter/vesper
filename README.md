@@ -318,40 +318,51 @@ conversations" gets you the same instructions.
 
 ## Use Vesper from Telegram
 
-`vesper telegram` connects Vesper to a Telegram bot of your own, so you can give it work
-from your phone. Every message you send becomes a turn of a normal conversation. While it
-works you see the same things as in the terminal: its answer as it is written, each step
-(file read, search, edit, command) with its result, the diff of every edit and the output
-of every command. When it needs a yes, the question comes with Yes, Always and No buttons.
+Vesper can work for you from a Telegram chat. Every message you send becomes a turn of a
+normal conversation, and you see what it does while it does it: its answer as it is
+written, each step (file read, search, edit, command) with its result, the diff of every
+edit and the output of every command. When it needs a yes, the question comes with Yes,
+Always and No buttons, or you can just type "yes". Photos go to the model as images, and
+other files are saved on your computer and handed to Vesper.
 
-Setting it up takes about a minute:
+**Setting it up takes about a minute.** First make a bot of your own: in Telegram, open
+[@BotFather](https://t.me/BotFather) (the real one has a blue check mark), send `/newbot`,
+pick a name and a username ending in `bot`, and copy the token it sends you. Then type
+`/telegram` inside Vesper and follow along:
 
-1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and
-   a username ending in `bot`. BotFather replies with a token.
-2. In the folder you want Vesper to work in, run `vesper telegram` and paste the token.
-3. Vesper prints a six-digit code. Send `/start CODE` to your new bot.
+1. Paste the token. Vesper checks it with Telegram right away.
+2. Open your bot and tap Start. Vesper shows your name and asks whether it is you.
+3. Answer yes. The bot is now paired with your account and starts in the background.
 
-That pairs your Telegram account. Anyone else who finds the bot gets a polite refusal.
+It keeps running after a restart, so there is nothing else to start. `/telegram` shows
+how it is doing at any time: whether the token works, who is paired, whether it is
+running, when it last heard from Telegram, the last problem it hit and where the log is.
+`/telegram off` and `/telegram on` stop and start it.
+
+If someone else writes to your bot, they get a one-hour code and nothing more. Type
+`/telegram approve CODE` in Vesper only if you want them to use it too.
+
 In the chat, `/new` starts a new conversation, `/resume` lists the earlier ones (from the
 terminal and the desktop app too) and replays the one you tap, `/stop` stops the current
 answer, `/mode` sets how much Vesper asks first, `/cd` moves to another folder and
 `/undo` puts back the files of the last change. A message sent while Vesper works is added
-to what it is doing.
+to what it is doing. You get a notification when an answer is finished or Vesper needs
+you; the steps in between arrive silently.
 
-```bash
-vesper telegram                # run the bot in this terminal (Ctrl+C stops it)
-vesper telegram --background   # keep it running, also after a restart (macOS)
-vesper telegram --stop         # stop the background bot
-vesper telegram --pair         # show a new code to pair another account
-```
+The same commands work in a terminal window: `vesper telegram setup`, `vesper telegram on`,
+`vesper telegram off`, `vesper telegram status`, and `vesper telegram run` to keep the bot
+in that window instead of the background.
 
-Inside a Vesper session, `/telegram` shows whether the bot is set up and running, and
-`/telegram on` or `/telegram off` starts or stops the background bot.
+Some things to know:
 
-The bot runs on your computer and asks Telegram for new messages, so nothing is exposed
-to the internet and no server is needed. Your computer has to be on for the bot to answer.
-The token is kept in `~/.vesper/.env` and the paired accounts in `~/.vesper/config.json`.
-Messages and code pass through Telegram's servers, so keep that in mind for private work.
+- The bot runs on your computer and asks Telegram for new messages. Nothing is exposed to
+  the internet and no server is needed, but the computer has to be on and awake to answer.
+- Only one copy of the bot can run at a time; a second one says so and stops.
+- A message sent while the bot was off is not run hours later. The bot tells you it was
+  offline, and you send it again if you still want it.
+- The token is kept in `~/.vesper/.env`, everything else in `~/.vesper/telegram/`,
+  including the log (`telegram.log`).
+- Messages and code pass through Telegram's servers, so keep that in mind for private work.
 
 ## Sessions and logs
 
@@ -584,7 +595,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.22.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.23.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

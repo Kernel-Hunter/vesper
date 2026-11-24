@@ -18,6 +18,7 @@ the agent in `coder.py`, its tools in `workspace.py`, saved history in `store.py
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import queue
@@ -124,7 +125,7 @@ SLASH = {
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
     "/mode": "ask | auto-edit | yolo | plan",
-    "/telegram": "use Vesper from Telegram: /telegram shows its state, /telegram on, /telegram off",
+    "/telegram": "use Vesper from your phone: /telegram sets it up or shows how it is doing; /telegram on, off",
     "/app": "open the desktop app",
     "/exit": "quit (or ctrl+d)",
 }
@@ -736,8 +737,10 @@ class App:
         """`vesper ...` typed at Vesper's own prompt: do the obvious thing instead of asking the model."""
         words = line.split()[1:]
         if words[:1] == ["telegram"]:
-            flags = set(words[1:])
-            self.telegram("off" if "--stop" in flags else "on" if "--background" in flags else "")
+            rest = words[1:]
+            arg = ("off" if "--stop" in rest else "on" if "--background" in rest else
+                   " ".join(w for w in rest if not w.startswith("-")))
+            self.telegram(arg)
             return
         note("You are already inside Vesper, so just type what you want done. Commands that start with "
              "`vesper` are for a normal terminal window; to run one from here, put ! in front: !" + line)
@@ -745,22 +748,43 @@ class App:
     def telegram(self, arg: str) -> None:
         from vesper import telegram as tg
 
-        arg = arg.strip().lower()
-        if arg in ("on", "start"):
-            state = tg.status()
-            if state["text"].startswith(("not set up", "set up, not paired")):
-                note(state["hints"][0])
+        words = arg.split()
+        action = words[0].lower() if words else ""
+        if action in ("", "status"):
+            state = tg.status(check_token=False)
+            if not action and not (state["configured"] and state["paired"]):
+                action = "setup"  # nothing to show yet: start the guided setup
+            else:
+                tg.show_status(console)
                 return
-            tg.background(True, self.root)
-        elif arg in ("off", "stop"):
-            tg.background(False, self.root)
-        elif arg:
-            note("Use /telegram, /telegram on or /telegram off.")
+        if action == "setup":
+            if not self.cfg.get("provider") and not os.environ.get("VESPER_FAKE_LLM"):
+                note("Pick a model first (/model): the bot uses the same one.")
+                return
+            tg.setup(tg._ask, tg._confirm, tg.printer(console), self.root)
+        elif action in ("on", "start"):
+            state = tg.status(check_token=False)
+            if not (state["configured"] and state["paired"]):
+                note("It is not set up yet. Type /telegram setup.")
+                return
+            with console.status("Starting the Telegram bot…"):
+                problem = tg.start_service(Path(tg.load_settings().get("folder") or self.root))
+            note(problem or "The Telegram bot is on. It runs in the background and starts again when you log in.")
+        elif action in ("off", "stop"):
+            with console.status("Stopping the Telegram bot…"):
+                tg.stop_service()
+            note("The Telegram bot is off.")
+        elif action == "approve" and len(words) == 2:
+            who = tg.approve_code(words[1])
+            if not who:
+                note("No pairing request has that code (codes last one hour).")
+                return
+            note(f"Paired with {who['name']}. They can use the bot now.")
+            with contextlib.suppress(Exception):
+                tg.Api(os.environ.get(tg.TOKEN_KEY, "")).call(
+                    "sendMessage", chat_id=who["chat"], text="✨ Paired. Send a message to start.")
         else:
-            state = tg.status()
-            console.print(Text.assemble(("  Telegram  ", f"bold {TEXT}"), (state["text"], OK if state["running"] else MUTED)))
-            for line in state["hints"]:
-                console.print(Text("  " + line, style=MUTED))
+            note("Use /telegram (status or setup), /telegram on, /telegram off, /telegram approve CODE.")
 
     def theme(self, arg: str) -> None:
         from vesper import themes, ui
@@ -1093,7 +1117,7 @@ class App:
                 t.add_column(style=MUTED)
                 for c in names:
                     if c in SLASH:
-                        t.add_row(c, SLASH[c])
+                        t.add_row(c, Text(SLASH[c]))  # Text: "[name]" is not markup
                         listed.add(c)
                 console.print(Padding(t, (0, 0, 1, 4)))
             rest = [(c, d) for c, d in SLASH.items() if c not in listed]
@@ -1105,7 +1129,7 @@ class App:
                 t.add_column(style=f"bold {ACCENT}", min_width=14, no_wrap=True)
                 t.add_column(style=MUTED)
                 for c, d in rest + custom:
-                    t.add_row(c, d)
+                    t.add_row(Text(c), Text(d))
                 console.print(Padding(t, (0, 0, 1, 4)))
             console.print(Text("  Keys", style=f"bold {TEXT}"))
             t = Table.grid(padding=(0, 3))

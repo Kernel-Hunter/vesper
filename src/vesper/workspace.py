@@ -92,6 +92,25 @@ def _deny_all(_action: dict) -> str:
     return "no"
 
 
+def starts_vesper(command: str) -> bool:
+    """Whether a shell command starts an interactive Vesper (a session, or the Telegram bot or its setup)."""
+    for part in re.split(r"[;&|]+", command):
+        words = part.split()
+        if not words or Path(words[0]).name != "vesper":
+            continue
+        rest, skip = [], False
+        for w in words[1:]:  # what is left after options (and the values of -C, --model, --mode)
+            if skip:
+                skip = False
+            elif w in ("-C", "--dir", "--model", "-m", "--mode"):
+                skip = True
+            elif not w.startswith("-"):
+                rest.append(w)
+        if not rest or rest[0] == "telegram" and (len(rest) == 1 or rest[1] in ("run", "setup")):
+            return "--version" not in words and "--help" not in words and "-h" not in words
+    return False
+
+
 def stops_vesper(command: str) -> bool:
     """Whether a shell command would kill this Vesper process (pkill/killall of "vesper", or kill of our pid)."""
     if re.search(r"\b(pkill|killall)\b[^;&|]*vesper", command, re.I):
@@ -524,6 +543,10 @@ class Workspace:
         moved = re.fullmatch(r"cd(\s+(?P<to>[^;&|<>]+))?", command)
         if moved:  # a bare `cd`: make it last, like the user expects
             return self.change_directory((moved.group("to") or "~").strip())
+        if starts_vesper(command):
+            raise ToolError("That starts Vesper itself, which waits for a person at a keyboard and would hang. "
+                            "Tell the user to type it in a terminal window, or for the Telegram bot to use "
+                            "/telegram inside Vesper.")
         if stops_vesper(command):
             raise ToolError("That would stop Vesper itself, which is running this conversation. "
                             "Ask the user to quit Vesper (Ctrl+D) or stop it from another terminal instead.")
