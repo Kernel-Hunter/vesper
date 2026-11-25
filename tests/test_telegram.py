@@ -478,3 +478,147 @@ def test_typing_vesper_telegram_inside_vesper_does_not_reach_the_model(monkeypat
     for line in ("vesper telegram --stop", "vesper telegram", "vesper telegram --background", "vesper telegram setup"):
         app.vesper_command(line)
     assert seen == ["off", "", "on", "setup"]
+
+
+# ---------------------------------------------------------------- the terminal sees what the bot does
+def test_a_turn_with_an_approval_lands_in_the_feed(bot):
+    reader = telegram.FeedReader()
+    bot.replies += [AIMessage("", tool_calls=[{"name": "write_file", "args": {"path": "b.txt", "content": "x\n"},
+                                               "id": "w1"}]), AIMessage("Written **b.txt**.")]
+    bot.handle(message("make b.txt"))
+    assert wait(lambda: bot.approvals)
+    bot.handle(message("yes"))
+    finish_turn(bot)
+    events = reader.read()
+    kinds = [e["kind"] for e in events]
+    assert kinds[0] == "user" and events[0]["text"] == "make b.txt" and events[0]["name"] == "Ada"
+    for kind in ("ask", "answered", "tool_start", "tool_end", "answer", "done"):
+        assert kind in kinds, kind
+    assert kinds.index("ask") < kinds.index("answered") < kinds.index("done")
+    ask = events[kinds.index("ask")]["action"]
+    assert ask["kind"] == "edit" and "+x" in ask["diff"]
+    assert events[kinds.index("answer")]["text"] == "Written **b.txt**."
+    assert {e["chat"] for e in events} == {CHAT}
+    assert reader.read() == []  # nothing twice
+
+
+def test_the_feed_reader_starts_at_the_end_and_copes_with_half_lines_and_rotation(cfg_home):
+    feed = telegram.Feed()
+    feed.write(1, "user", text="old")
+    reader = telegram.FeedReader()
+    assert reader.read() == []  # only what happens after it starts
+    path = telegram.feed_path()
+    with open(path, "ab") as f:
+        f.write(b'{"kind": "answer", "te')
+    assert reader.read() == []
+    with open(path, "ab") as f:
+        f.write(b'xt": "hi"}\n')
+    assert [e["text"] for e in reader.read()] == ["hi"]
+    path.unlink()
+    feed.write(1, "user", text="fresh")
+    assert [e["text"] for e in reader.read()] == ["fresh"]
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_the_feed_never_raises_and_cuts_long_arguments(cfg_home, monkeypatch):
+    feed = telegram.Feed()
+    reader = telegram.FeedReader()
+    feed.write(1, "tool_start", tool="write_file", args={"content": "x" * 50_000})
+    assert len(reader.read()[0]["args"]["content"]) < 3000
+    monkeypatch.setattr(telegram, "feed_path", lambda: Path("/nonexistent/dir/that/cannot/exist/live.jsonl"))
+    feed.write(1, "user", text="still fine")  # no exception
+
+
+def test_the_feed_is_rotated_when_it_grows(cfg_home, monkeypatch):
+    monkeypatch.setattr(telegram, "FEED_MAX_BYTES", 200)
+    feed = telegram.Feed()
+    for i in range(20):
+        feed.write(1, "answer", text=f"line {i} " + "x" * 30)
+    assert telegram.feed_path().stat().st_size < 400
+    assert telegram.feed_path().with_name("live.jsonl.1").exists()
+
+
+def test_every_feed_event_draws_in_the_terminal():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from vesper.ui import FeedPrinter
+
+    out = Console(file=StringIO(), width=100, color_system=None)
+    printer = FeedPrinter()
+    events = [
+        {"chat": 1, "kind": "user", "name": "Ada", "text": "fix the bug", "images": 1, "steer": False},
+        {"chat": 1, "kind": "tool_start", "tool": "run_command", "args": {"command": "pytest -q"}},
+        {"chat": 1, "kind": "tool_end", "tool": "run_command", "output": "exit code 0\n3 passed", "ok": True, "ms": 1200},
+        {"chat": 1, "kind": "ask", "action": {"kind": "edit", "path": "/p/a.py", "diff": "--- a\n+++ b\n-x\n+y\n"}},
+        {"chat": 1, "kind": "answered", "answer": "yes"},
+        {"chat": 1, "kind": "ask", "action": {"kind": "command", "command": "rm -rf build"}},
+        {"chat": 1, "kind": "answered", "answer": "no"},
+        {"chat": 1, "kind": "diff", "path": "/p/b.py", "diff": "--- a\n+++ b\n+z\n"},
+        {"chat": 1, "kind": "tasks", "items": [{"text": "step one", "status": "done"}]},
+        {"chat": 1, "kind": "notice", "text": "Switched model"},
+        {"chat": 1, "kind": "cwd", "path": "/p"},
+        {"chat": 1, "kind": "answer", "text": "Fixed **it**."},
+        {"chat": 1, "kind": "done", "seconds": 60, "tools": 6, "error": None, "stopped": False},
+        {"chat": 2, "kind": "tool_start", "name": "Bob", "tool": "read_file", "args": {"path": "x"}},
+        {"chat": 2, "kind": "mystery"},
+    ]
+    for event in events:
+        for part in printer.render(event):
+            out.print(part)
+    text = out.file.getvalue()
+    for piece in ("Ada", "on Telegram", "fix the bug", "pytest -q", "3 passed", "Allowed", "Declined",
+                  "rm -rf build", "step one", "Switched model", "Fixed it.", "6 steps", "Bob", "1m"):
+        assert piece in text, piece
+    assert text.count("on Telegram") >= 4  # Ada's header, two questions... and Bob's header
+
+
+def test_the_prompt_mirror_prints_above_a_running_prompt(cfg_home, monkeypatch):
+    import asyncio
+
+    feed = telegram.Feed()
+    printed = []
+
+    class App:
+        is_running = True
+
+        def __init__(self):
+            self.loop = asyncio.new_event_loop()
+
+    class Prompt:
+        app = App()
+
+    monkeypatch.setattr("prompt_toolkit.application.run_in_terminal", lambda fn: fn())
+    mirror = tui.TelegramMirror(Prompt())
+    monkeypatch.setattr(mirror.printer, "render", lambda e: [e["text"]])
+    monkeypatch.setattr(tui.console, "print", lambda part="": printed.append(part))
+    mirror.start()
+    try:
+        feed.write(1, "answer", text="from the phone")
+        loop = Prompt.app.loop
+        assert wait(lambda: (loop.run_until_complete(asyncio.sleep(0.05)), printed)[1], timeout=5)
+        assert printed == ["from the phone"]
+        Prompt.app.is_running = False  # Vesper is busy with its own turn: wait for the next prompt
+        feed.write(1, "answer", text="later")
+        assert wait(lambda: mirror.queue, timeout=5)
+        assert printed == ["from the phone"]
+        mirror.flush()
+        assert printed == ["from the phone", "later"]
+        mirror.enabled = False
+        feed.write(1, "answer", text="hidden")
+        time.sleep(0.6)
+        mirror.flush()
+        assert printed == ["from the phone", "later"]
+    finally:
+        mirror.close()
+        Prompt.app.loop.close()
+    assert not mirror.thread.is_alive()
+
+
+def test_a_name_is_saved_the_first_time_a_paired_user_writes(cfg_home, tmp_path):
+    telegram.update_settings(lambda d: d["allowed"].append(USER))
+    b = telegram.Bot(FakeApi(), None, {}, tmp_path, say=lambda s: None)
+    b.handle(message("/help"))
+    assert telegram.load_settings()["names"][str(USER)] == "Ada"

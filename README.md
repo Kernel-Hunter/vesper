@@ -349,9 +349,16 @@ answer, `/mode` sets how much Vesper asks first, `/cd` moves to another folder a
 to what it is doing. You get a notification when an answer is finished or Vesper needs
 you; the steps in between arrive silently.
 
+**What the bot does also shows on your computer.** While Vesper waits for you in a terminal,
+each Telegram message, step, diff, question and answer appears above the prompt as it
+happens, under the name of whoever sent it; anything you were typing stays where it was.
+`/telegram watch` (or `vesper telegram watch` in a terminal window) follows it on its own
+until Ctrl+C. `/telegram mirror off` stops it showing at the prompt, `/telegram mirror on`
+brings it back.
+
 The same commands work in a terminal window: `vesper telegram setup`, `vesper telegram on`,
-`vesper telegram off`, `vesper telegram status`, and `vesper telegram run` to keep the bot
-in that window instead of the background.
+`vesper telegram off`, `vesper telegram status`, `vesper telegram watch`, and
+`vesper telegram run` to keep the bot in that window instead of the background.
 
 Some things to know:
 
@@ -595,7 +602,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.23.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.24.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

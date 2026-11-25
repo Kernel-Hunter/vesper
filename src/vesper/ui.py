@@ -917,3 +917,71 @@ def print_events(events: list[dict], full: bool = False, out: Console | None = N
 
 
 apply_theme()  # the default theme until the config names one
+
+
+# ---------------------------------------------------------------- what the Telegram bot is doing
+class FeedPrinter:
+    """Turns the Telegram bot's live feed (`telegram.Feed`) into the lines a terminal turn
+    would show: who wrote, the steps, diffs, questions and the answer. Says who it is
+    for whenever the conversation it follows changes."""
+
+    def __init__(self) -> None:
+        self.chat = None
+
+    def header(self, event: dict) -> Text:
+        who = event.get("name") or "Telegram"
+        return Text.assemble(("  ✈ ", f"bold {ACCENT}"), (who, f"bold {TEXT}"), ("  on Telegram", MUTED))
+
+    def render(self, event: dict) -> list:
+        kind, out = event.get("kind"), []
+        if kind == "user" or event.get("chat") != self.chat:
+            out.append(Text())
+            out.append(self.header(event))
+            self.chat = event.get("chat")
+        if kind == "user":
+            text = event.get("text", "")
+            out.append(user_bubble(("➕ " if event.get("steer") else "") + text))
+            if event.get("images"):
+                out.append(Text(f"     {event['images']} image(s) attached", style=MUTED))
+            out.append(Text())
+        elif kind == "tool_start":
+            args = event.get("args") or {}
+            out.append(tool_start_line(event.get("tool", ""), args))
+            if event.get("tool") == "run_command":
+                out.append(Text("     $ " + str(args.get("command", "")), style=MUTED))
+        elif kind == "tool_end":
+            out.append(tool_end_line(event.get("tool", ""), event.get("output", ""), event.get("ok", True), event.get("ms")))
+        elif kind == "diff":
+            title = ("Created " if event.get("new") else "Edited ") + short_path(event.get("path", ""))
+            out.append(diff_panel(event, title, MUTED, AUTO_DIFF_LINES))
+        elif kind == "ask":
+            action = event.get("action") or {}
+            if action.get("kind") == "edit":
+                title = ("Create " if action.get("new") else "Edit ") + short_path(action.get("path", "")) + "?"
+                out.append(diff_panel(action, title + "  (asked on Telegram)", WARN, AUTO_DIFF_LINES))
+            else:
+                what = action.get("command") or action.get("url") or action.get("mcp_tool") or ""
+                out.append(Text.assemble(("  ? ", f"bold {WARN}"), (str(what), TEXT), ("  asked on Telegram", MUTED)))
+        elif kind == "answered":
+            answer_ = event.get("answer")
+            label = {"yes": ("✓ Allowed", OK), "always": ("✓ Allowed from now on", OK)}.get(answer_, ("✗ Declined", ERR))
+            out.append(Text.assemble(("  ", ""), (label[0], f"bold {label[1]}"), ("  on Telegram", MUTED)))
+        elif kind == "answer":
+            out.append(answer(event.get("text", ""), mark=True))
+        elif kind == "tasks":
+            out.append(tasks_block(event.get("items") or []))
+        elif kind in ("notice", "cwd"):
+            out.append(Text("  " + str(event.get("text") or f"now in {event.get('path', '')}"), style=MUTED))
+        elif kind == "done":
+            bits = []
+            if event.get("seconds") is not None:
+                bits.append(fmt_duration(event["seconds"]))
+            if event.get("tools"):
+                bits.append(f"{event['tools']} step{'s' if event['tools'] != 1 else ''}")
+            if event.get("stopped"):
+                bits.append("stopped")
+            if event.get("error"):
+                out.append(Text("  ⚠ " + str(event["error"]), style=WARN))
+            out.append(Text.assemble(("  ◦ ", FAINT), (" · ".join(bits) or "done", FAINT)))
+            self.chat = None
+        return out

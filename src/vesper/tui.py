@@ -62,6 +62,7 @@ from vesper.ui import (
     TOOL_LABELS,
     TEXT,
     WARN,
+    FeedPrinter,
     Renderer,
     apply_theme,
     banner,
@@ -125,7 +126,7 @@ SLASH = {
     "/model": "switch provider and model",
     "/key": "set the API key for the current provider",
     "/mode": "ask | auto-edit | yolo | plan",
-    "/telegram": "use Vesper from your phone: /telegram sets it up or shows how it is doing; /telegram on, off",
+    "/telegram": "use Vesper from your phone: /telegram sets it up or shows how it is doing; /telegram on, off, watch",
     "/app": "open the desktop app",
     "/exit": "quit (or ctrl+d)",
 }
@@ -236,6 +237,7 @@ class App:
         self.cfg = cfg
         self.mode = mode
         self.store = store
+        self.mirror = None
         self.verbose = bool(cfg.get("verbose"))
         self.renderer = Renderer()
         self.workspace = None
@@ -774,6 +776,15 @@ class App:
             with console.status("Stopping the Telegram bot…"):
                 tg.stop_service()
             note("The Telegram bot is off.")
+        elif action == "watch":
+            tg.watch(console)
+        elif action == "mirror" and len(words) == 2 and words[1].lower() in ("on", "off"):
+            on = words[1].lower() == "on"
+            self._remember({"telegram_mirror": on})
+            if self.mirror is not None:
+                self.mirror.enabled = on
+            note("Telegram activity shows here while Vesper waits for you." if on else
+                 "Telegram activity no longer shows here. /telegram watch still follows it.")
         elif action == "approve" and len(words) == 2:
             who = tg.approve_code(words[1])
             if not who:
@@ -784,7 +795,8 @@ class App:
                 tg.Api(os.environ.get(tg.TOKEN_KEY, "")).call(
                     "sendMessage", chat_id=who["chat"], text="✨ Paired. Send a message to start.")
         else:
-            note("Use /telegram (status or setup), /telegram on, /telegram off, /telegram approve CODE.")
+            note("Use /telegram (status or setup), /telegram on, /telegram off, /telegram watch, "
+                 "/telegram mirror on|off, /telegram approve CODE.")
 
     def theme(self, arg: str) -> None:
         from vesper import themes, ui
@@ -1241,8 +1253,17 @@ class App:
     # ----- main loop -----
     def loop(self) -> None:
         prompt = self.make_prompt()
+        self.mirror = TelegramMirror(prompt, enabled=self.cfg.get("telegram_mirror", True))
+        self.mirror.start()
+        try:
+            self._loop(prompt)
+        finally:
+            self.mirror.close()
+
+    def _loop(self, prompt) -> None:
         last_interrupt = 0.0
         while True:
+            self.mirror.flush()  # what the bot did while this window was busy
             try:
                 line = prompt.prompt(default=self._prefill)
                 self._prefill = ""
@@ -1283,6 +1304,75 @@ class App:
         if self.session is not None and self.session.history and self.store is not None:
             note(f"Saved. Continue later with: vesper -r {self.session.id[:8]}")
         console.print(Text("  ") + gradient("See you") + Text(" ✦", style=f"bold {ACCENT_3}"))
+
+
+class TelegramMirror:
+    """Shows what the Telegram bot does in this window while Vesper waits at the prompt:
+    a background thread follows the bot's feed and prints above the prompt through
+    prompt_toolkit's `run_in_terminal`, so the line being typed is kept. While this window
+    is busy with its own turn, events wait and show before the next prompt."""
+
+    def __init__(self, prompt, enabled: bool = True) -> None:
+        from vesper import telegram as tg
+
+        self.prompt = prompt
+        self.enabled = enabled
+        self.reader = tg.FeedReader()
+        self.printer = FeedPrinter()
+        self.queue: list[dict] = []
+        self.lock = threading.Lock()
+        self.pending = False
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._follow, daemon=True, name="vesper-telegram-mirror")
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def close(self) -> None:
+        self.stopped.set()
+        self.thread.join(2)
+
+    def _follow(self) -> None:
+        while not self.stopped.wait(0.4):
+            try:
+                events = self.reader.read()
+            except Exception:  # noqa: BLE001 - never take the terminal down for the mirror
+                continue
+            if not self.enabled:
+                continue
+            with self.lock:
+                self.queue.extend(events)
+                wanted = bool(self.queue) and not self.pending
+            if wanted:
+                self._kick()
+
+    def _kick(self) -> None:
+        app = getattr(self.prompt, "app", None)
+        loop = getattr(app, "loop", None)
+        if app is None or loop is None or not app.is_running:
+            return  # the next prompt prints them
+        with self.lock:
+            self.pending = True
+        try:
+            loop.call_soon_threadsafe(self._print_above_prompt)
+        except RuntimeError:  # the loop closed in between
+            with self.lock:
+                self.pending = False
+
+    def _print_above_prompt(self) -> None:  # on the prompt's own loop
+        from prompt_toolkit.application import run_in_terminal
+
+        with self.lock:
+            self.pending = False
+        if self.prompt.app.is_running:
+            run_in_terminal(self.flush)
+
+    def flush(self) -> None:
+        with self.lock:
+            events, self.queue = self.queue, []
+        for event in events:
+            for part in self.printer.render(event):
+                console.print(part)
 
 
 # ---------------------------------------------------------------- one-shot mode

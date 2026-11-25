@@ -180,6 +180,92 @@ def _file_lock(name: str):
             _unlock(f)
 
 
+# ---------------------------------------------------------------- the live feed
+FEED_MAX_BYTES = 2_000_000
+
+
+def feed_path() -> Path:
+    return home() / "live.jsonl"
+
+
+def _trim(value, limit: int = 2000):
+    """Arguments as they go into the feed: long strings (a whole file being written) cut short."""
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "…"
+    if isinstance(value, dict):
+        return {k: _trim(v, limit) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_trim(v, limit) for v in value[:50]]
+    return value
+
+
+class Feed:
+    """What the bot is doing, one JSON line per event, so a terminal can follow along
+    (`vesper telegram watch`, and the idle prompt of any open Vesper). Writing never raises:
+    a full disk costs the mirror, never the turn."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+
+    def write(self, chat: int, kind: str, **data) -> None:
+        try:
+            line = json.dumps({"t": time.time(), "chat": chat, "kind": kind, **_trim(data)},
+                              ensure_ascii=False, default=str) + "\n"
+            with self.lock:
+                path = feed_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with contextlib.suppress(OSError):
+                    if path.stat().st_size > FEED_MAX_BYTES:
+                        os.replace(path, path.with_name(path.name + ".1"))
+                fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                try:
+                    os.write(fd, line.encode())
+                finally:
+                    os.close(fd)
+        except Exception:  # noqa: BLE001 - the mirror is a nice-to-have
+            pass
+
+
+class FeedReader:
+    """Follows the feed from where it is now: only what happens after it starts. Copes with
+    half-written lines and with the file being rotated or recreated."""
+
+    def __init__(self) -> None:
+        try:
+            st = feed_path().stat()
+            self.ino, self.offset = st.st_ino, st.st_size
+        except OSError:
+            self.ino, self.offset = None, 0
+        self.rest = b""
+
+    def read(self) -> list[dict]:
+        path = feed_path()
+        try:
+            st = path.stat()
+        except OSError:
+            return []
+        if st.st_ino != self.ino or st.st_size < self.offset:  # a new file: read it from the start
+            self.ino, self.offset, self.rest = st.st_ino, 0, b""
+        if st.st_size == self.offset:
+            return []
+        try:
+            with open(path, "rb") as f:
+                f.seek(self.offset)
+                chunk = f.read(min(st.st_size - self.offset, 4_000_000))
+        except OSError:
+            return []
+        self.offset += len(chunk)
+        lines = (self.rest + chunk).split(b"\n")
+        self.rest = lines.pop()
+        out = []
+        for line in lines:
+            with contextlib.suppress(ValueError):
+                event = json.loads(line)
+                if isinstance(event, dict) and "kind" in event:
+                    out.append(event)
+        return out
+
+
 # ---------------------------------------------------------------- settings and state
 def load_settings() -> dict:
     data = _read_json(home() / "settings.json")
@@ -493,7 +579,19 @@ class Turn:
         self.ticker = threading.Thread(target=self._tick, daemon=True, name="vesper-telegram-tick")
         self.ticker.start()
 
+    def mirror(self, kind: str, **data) -> None:
+        self.bot.feed.write(self.chat.id, kind, name=self.chat.name, **data)
+
     def event(self, kind: str, data: dict) -> None:
+        if kind == "tool_start" and data["name"] != "update_tasks":
+            self.mirror("tool_start", tool=data["name"], args=data.get("args", {}))
+        elif kind == "tool_end" and data["name"] != "update_tasks":
+            self.mirror("tool_end", tool=data["name"], output=data.get("output", "")[:6000],
+                        ok=data.get("ok", True), ms=data.get("ms"))
+        elif kind == "auto" and data.get("kind") == "edit":
+            self.mirror("diff", path=data.get("path", ""), diff=(data.get("diff") or "")[-6000:], new=data.get("new"))
+        elif kind in ("tasks", "notice", "cwd"):
+            self.mirror(kind, **data)
         with self.lock:
             if kind == "token":
                 if self.steps or self.log_msg is not None:
@@ -538,6 +636,7 @@ class Turn:
             self._flush(force=True)
 
     def finish(self, error: str | None = None, stopped: bool = False) -> None:
+        usage = self.usage or {}
         with self.lock:
             self.running = self.alive = False
             self._close_log()
@@ -554,6 +653,8 @@ class Turn:
                 if self.usage.get("tools"):
                     bits.append(f"{self.usage['tools']} step{'s' if self.usage['tools'] != 1 else ''}")
                 end.append("<i>◦ " + " · ".join(bits) + "</i>")
+            self.mirror("done", error=error, stopped=stopped,
+                        seconds=usage.get("seconds"), tools=usage.get("tools"))
             # the one message of a turn that notifies: the phone buzzes when the work is done
             self._draw(None, "\n".join(end) or "<i>◦ done</i>", silent=False)
 
@@ -610,6 +711,7 @@ class Turn:
 
     def _close_text(self) -> None:
         if self.text.strip():
+            self.mirror("answer", text=self.text)
             running, self.running = self.running, False
             self._flush(force=True)
             self.running = running
@@ -635,6 +737,14 @@ class Turn:
 
 
 # ---------------------------------------------------------------- chats and the bot
+def sender_name(msg: dict) -> str:
+    sender = msg.get("from") or {}
+    name = " ".join(filter(None, (sender.get("first_name"), sender.get("last_name")))) or "someone"
+    if sender.get("username"):
+        name += f" (@{sender['username']})"
+    return name
+
+
 class Chat:
     def __init__(self, chat_id: int) -> None:
         self.id = chat_id
@@ -643,6 +753,7 @@ class Chat:
         self.worker: threading.Thread | None = None
         self.stop = threading.Event()
         self.turn: Turn | None = None
+        self.name = ""
 
     @property
     def busy(self) -> bool:
@@ -655,6 +766,7 @@ class Bot:
         self.folder = folder
         self.chats: dict[int, Chat] = {}
         self.approvals: dict[str, dict] = {}
+        self.feed = Feed()
         self.offset = 0
         self.username = ""
         self.started_at = time.time()
@@ -787,6 +899,7 @@ class Bot:
             return
         text = (msg.get("text") or msg.get("caption") or "").strip()
         chat = self.chat(chat_id)
+        chat.name = self.remember_name(user, msg)
         if text.startswith("/"):
             cmd, _, arg = text.partition(" ")
             return self.command(chat, cmd.split("@")[0].lower(), arg.strip())
@@ -805,6 +918,8 @@ class Bot:
         if files:
             text = (text or "Look at the attached file.") + "\n\n" + "\n".join(
                 f"[The user sent a file over Telegram; it is saved at {p}]" for p in files)
+        self.feed.write(chat_id, "user", name=chat.name, text=text or "(an image)",
+                        images=len(images), steer=chat.busy)
         if chat.busy:
             if chat.session.steer(text):
                 self.send(chat_id, "➕ Added to what Vesper is doing.")
@@ -842,11 +957,19 @@ class Bot:
         path.write_bytes(data)
         return path
 
+    def remember_name(self, user: int, msg: dict) -> str:
+        """The sender's name, saved for `/telegram` the first time a paired user writes
+        (pairings made before 0.24 only kept the id)."""
+        name = sender_name(msg)
+        if name != "someone" and load_settings()["names"].get(str(user)) != name:
+            def change(data: dict) -> None:
+                data["names"][str(user)] = name
+            with contextlib.suppress(OSError):
+                update_settings(change)
+        return name
+
     def request_pairing(self, user: int, chat_id: int, msg: dict) -> None:
-        sender = msg.get("from") or {}
-        name = " ".join(filter(None, (sender.get("first_name"), sender.get("last_name")))) or "someone"
-        if sender.get("username"):
-            name += f" (@{sender['username']})"
+        name = sender_name(msg)
         code: list[str] = []
 
         def change(data: dict) -> None:
@@ -958,6 +1081,9 @@ class Bot:
         buttons = [row, [{"text": "✖ No", "callback_data": f"ap:{aid}:no"}]]
         if chat.turn:
             chat.turn.wait_for_user(True)
+        self.feed.write(chat.id, "ask", name=chat.name, action={
+            k: action.get(k) for k in ("kind", "path", "diff", "new", "command", "cwd", "url", "mcp_tool", "server")
+            if action.get(k) is not None})
         try:
             slot["message"] = self.send(chat.id, body, buttons, silent=False)
         except TelegramError as e:
@@ -970,6 +1096,7 @@ class Bot:
             chat.turn.wait_for_user(False)
         answer = slot["answer"] if answered and not chat.stop.is_set() else "no"
         label = {"yes": "✅ Allowed", "always": "♾ Allowed from now on", "no": "✖ Declined"}[answer]
+        self.feed.write(chat.id, "answered", name=chat.name, answer=answer)
         with contextlib.suppress(TelegramError):
             self.send_or_edit(chat.id, slot["message"], body + f"\n\n<b>{label}</b>")
         return answer
@@ -1446,9 +1573,10 @@ def command(argv: list[str]) -> int:
 
     ap = argparse.ArgumentParser(
         prog="vesper telegram", description="Use Vesper from Telegram.",
-        epilog="Inside Vesper, /telegram does the same: /telegram setup, on, off, approve CODE.")
-    ap.add_argument("action", nargs="?", default="", choices=["", "setup", "on", "off", "status", "run", "approve"],
-                    help="setup (connect and pair), on / off (background service), status, run (in this window)")
+        epilog="Inside Vesper, /telegram does the same: /telegram setup, on, off, watch, approve CODE.")
+    ap.add_argument("action", nargs="?", default="", choices=["", "setup", "on", "off", "status", "watch", "run", "approve"],
+                    help="setup (connect and pair), on / off (background service), status, "
+                         "watch (follow what it does), run (in this window)")
     ap.add_argument("code", nargs="?", help="the pairing code, for approve")
     ap.add_argument("--folder", help="the folder Vesper works in (default: the current one)")
     ap.add_argument("--background", action="store_true", help=argparse.SUPPRESS)  # 0.22.0 names
@@ -1470,6 +1598,9 @@ def command(argv: list[str]) -> int:
         return 0
     if action == "status":
         show_status(console)
+        return 0
+    if action == "watch":
+        watch(console)
         return 0
     if action == "approve":
         who = approve_code(args.code or "")
@@ -1528,6 +1659,26 @@ def _ask(prompt: str, secret: bool = False) -> str | None:
 def _confirm(prompt: str) -> bool:
     answer = _ask(f"{prompt} [Y/n] ")
     return answer is not None and answer.strip().lower() in ("", "y", "yes")
+
+
+def watch(console, poll: float = 0.3, stop: threading.Event | None = None) -> None:
+    """Show what the bot does, as it happens, until Ctrl+C (or `stop`)."""
+    from rich.text import Text
+
+    from vesper import ui
+
+    reader, shown = FeedReader(), ui.FeedPrinter()
+    ui.note("Following the Telegram bot: messages, steps and answers show here as they happen. Ctrl+C stops.")
+    if not status(check_token=False)["running"]:
+        console.print(Text("  The bot is not running right now. Start it with /telegram on.", style=ui.WARN))
+    try:
+        while stop is None or not stop.is_set():
+            for event in reader.read():
+                for part in shown.render(event):
+                    console.print(part)
+            time.sleep(poll)
+    except KeyboardInterrupt:
+        console.print()
 
 
 def printer(console):
