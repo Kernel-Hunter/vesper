@@ -881,7 +881,23 @@ class Bot:
                     except Exception as e:  # noqa: BLE001 - one bad update must not stop the bot
                         self.log_error(f"Could not handle a Telegram update: {e}")
         finally:
+            self.shutdown()
             lock.release()
+
+    def shutdown(self, wait_s: float = 5) -> None:
+        """Stops every running turn and closes its open questions (as "no"), so no thread is
+        left waiting for a button nobody can press any more."""
+        for chat in list(self.chats.values()):
+            chat.stop.set()
+            if chat.workspace is not None:
+                with contextlib.suppress(Exception):
+                    chat.workspace.cancel()
+        for slot in list(self.approvals.values()):
+            slot["event"].set()
+        end = time.monotonic() + wait_s
+        for chat in list(self.chats.values()):
+            if chat.worker is not None:
+                chat.worker.join(max(0.0, end - time.monotonic()))
 
     def handle(self, update: dict) -> None:
         if "callback_query" in update:

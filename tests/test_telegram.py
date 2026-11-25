@@ -138,7 +138,9 @@ def bot(cfg_home, tmp_path, monkeypatch):
     pair()
     b = telegram.Bot(FakeApi(), Store(tmp_path / "v.db"), {"provider": "ollama"}, proj, say=lambda s: None)
     b.replies = replies
-    return b
+    yield b
+    b.shutdown()
+    assert not any(c.busy for c in b.chats.values()), "a turn outlived its test"
 
 
 def finish_turn(b):
@@ -198,7 +200,7 @@ def test_a_command_waits_for_the_yes_button(bot):
     bot.handle(message("say hello"))
     assert wait(lambda: bot.approvals)
     aid = next(iter(bot.approvals))
-    assert f"ap:{aid}:yes" in bot.api.keys()
+    assert wait(lambda: f"ap:{aid}:yes" in bot.api.keys())  # the question is sent just after it is filed
     bot.handle(press(f"ap:{aid}:no", user=999))  # someone else cannot answer
     assert bot.approvals
     bot.handle(press(f"ap:{aid}:yes"))
@@ -644,3 +646,12 @@ def test_the_bot_folder_does_not_follow_the_terminal(cfg_home, tmp_path, monkeyp
     home_dir.rmdir()
     telegram.update_settings(lambda d: d.update(folder=str(home_dir)))
     assert telegram.bot_folder(elsewhere) == elsewhere.resolve()  # the saved folder is gone
+
+
+def test_stopping_the_bot_closes_open_questions(bot):
+    bot.replies += [AIMessage("", tool_calls=[{"name": "run_command", "args": {"command": "echo hi"}, "id": "c1"}]),
+                    AIMessage("Done.")]
+    bot.handle(message("say hi"))
+    assert wait(lambda: bot.approvals)
+    bot.shutdown()
+    assert not bot.chats[CHAT].busy and not bot.approvals
