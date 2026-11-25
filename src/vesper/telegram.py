@@ -46,8 +46,13 @@ from pathlib import Path
 
 try:
     import fcntl
-except ImportError:  # Windows: no advisory locks; the service is macOS and Linux only anyway
+except ImportError:  # Windows
     fcntl = None
+    import msvcrt
+
+# Windows locks are mandatory: a locked byte cannot be read by anyone else. Lock one byte
+# far past the pid, so another process can still read who holds the lock.
+_WIN_LOCK_AT = 1 << 20
 
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -132,19 +137,47 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+def _try_lock(f) -> bool:
+    """Take an exclusive lock on an open file without waiting. False when someone holds it."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            f.seek(_WIN_LOCK_AT)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+def _lock(f) -> None:
+    if fcntl is not None:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return
+    while not _try_lock(f):
+        time.sleep(0.05)
+
+
+def _unlock(f) -> None:
+    if fcntl is not None:
+        fcntl.flock(f, fcntl.LOCK_UN)
+    else:
+        f.flush()
+        f.seek(_WIN_LOCK_AT)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextlib.contextmanager
 def _file_lock(name: str):
     """An exclusive lock between Vesper processes (the background bot and the terminal both write)."""
     path = home() / f"{name}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
-        if fcntl is not None:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        _lock(f)
         try:
             yield
         finally:
-            if fcntl is not None:
-                fcntl.flock(f, fcntl.LOCK_UN)
+            _unlock(f)
 
 
 # ---------------------------------------------------------------- settings and state
@@ -226,12 +259,9 @@ class PollerLock:
         path = home() / "poller.lock"
         path.parent.mkdir(parents=True, exist_ok=True)
         f = open(path, "a+")
-        if fcntl is not None:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                f.close()
-                raise AlreadyRunning(lock_holder()) from None
+        if not _try_lock(f):
+            f.close()
+            raise AlreadyRunning(lock_holder())
         f.seek(0)
         f.truncate()
         f.write(str(os.getpid()))
@@ -240,8 +270,7 @@ class PollerLock:
 
     def release(self) -> None:
         if self.file is not None:
-            if fcntl is not None:
-                fcntl.flock(self.file, fcntl.LOCK_UN)
+            _unlock(self.file)
             self.file.close()
             self.file = None
 
@@ -249,16 +278,14 @@ class PollerLock:
 def lock_holder() -> int | None:
     """The pid of the running poller, or None when nobody polls."""
     path = home() / "poller.lock"
-    if fcntl is None or not path.exists():
+    if not path.exists():
         return None
     with open(path, "a+") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not _try_lock(f):
             f.seek(0)
             text = f.read().strip()
             return int(text) if text.isdigit() else -1
-        fcntl.flock(f, fcntl.LOCK_UN)
+        _unlock(f)
         return None
 
 

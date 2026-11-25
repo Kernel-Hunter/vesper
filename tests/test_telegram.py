@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -252,7 +253,8 @@ def test_photos_reach_the_model_and_files_land_in_the_inbox(bot, monkeypatch):
     bot.handle(message("", document={"file_id": "d", "file_name": "data.csv"}))
     text = seen[-1][0]
     path = re.search(r"saved at (\S+)\]", text).group(1)
-    assert open(path).read() == "col\n1\n" and "/telegram/inbox/" in path
+    saved = Path(path)
+    assert saved.read_bytes() == b"col\n1\n" and saved.parent == telegram.home() / "inbox"
 
 
 def test_messages_sent_while_the_bot_was_off_are_not_run(bot):
