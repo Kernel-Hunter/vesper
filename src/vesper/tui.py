@@ -770,7 +770,7 @@ class App:
                 note("It is not set up yet. Type /telegram setup.")
                 return
             with console.status("Starting the Telegram bot…"):
-                problem = tg.start_service(Path(tg.load_settings().get("folder") or self.root))
+                problem = tg.start_service(self.root)
             note(problem or "The Telegram bot is on. It runs in the background and starts again when you log in.")
         elif action in ("off", "stop"):
             with console.status("Stopping the Telegram bot…"):

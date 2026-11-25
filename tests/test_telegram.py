@@ -622,3 +622,25 @@ def test_a_name_is_saved_the_first_time_a_paired_user_writes(cfg_home, tmp_path)
     b = telegram.Bot(FakeApi(), None, {}, tmp_path, say=lambda s: None)
     b.handle(message("/help"))
     assert telegram.load_settings()["names"][str(USER)] == "Ada"
+
+
+def test_the_bot_folder_does_not_follow_the_terminal(cfg_home, tmp_path, monkeypatch):
+    home_dir, elsewhere = tmp_path / "work", tmp_path / "elsewhere"
+    home_dir.mkdir()
+    elsewhere.mkdir()
+    assert telegram.bot_folder(home_dir) == home_dir.resolve()  # nothing saved: saved now
+    assert telegram.bot_folder(elsewhere) == home_dir.resolve()  # restarted from another folder: kept
+    seen = []
+
+    def stop_here(folder):
+        seen.append(folder)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(telegram, "program", stop_here)
+    with pytest.raises(RuntimeError):
+        telegram.start_service(elsewhere)
+    assert seen == [home_dir.resolve()]
+    assert telegram.bot_folder(elsewhere, save=True) == elsewhere.resolve()  # a new setup moves it
+    home_dir.rmdir()
+    telegram.update_settings(lambda d: d.update(folder=str(home_dir)))
+    assert telegram.bot_folder(elsewhere) == elsewhere.resolve()  # the saved folder is gone

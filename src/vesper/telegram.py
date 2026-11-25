@@ -1359,11 +1359,25 @@ def stop_service() -> None:
     wait_until_free(15)
 
 
+def bot_folder(fallback: Path, save: bool = False) -> Path:
+    """The folder the bot works in. It is saved once and then kept, so restarting the bot
+    from another folder (a terminal, a script) never moves it; /cd in the chat or a new
+    setup changes it on purpose. `save` makes `fallback` the saved folder."""
+    saved = load_settings().get("folder")
+    if saved and Path(saved).is_dir() and not save:
+        return Path(saved)
+    folder = Path(fallback).expanduser().resolve()
+    with contextlib.suppress(OSError):
+        update_settings(lambda d: d.update(folder=str(folder)))
+    return folder
+
+
 def start_service(folder: Path) -> str | None:
-    """Installs the bot as a login service and starts it. Returns why it failed, or None."""
+    """Installs the bot as a login service and starts it. Returns why it failed, or None.
+    `folder` is only used when no folder is saved yet."""
     log = log_path()
     log.parent.mkdir(parents=True, exist_ok=True)
-    args = program(folder)
+    args = program(bot_folder(folder))
     holder = lock_holder()
     if holder and not service_running():
         return (f"A Vesper Telegram bot is already running in a terminal (process {holder}). "
@@ -1505,6 +1519,7 @@ def setup(ask, confirm, say, folder: Path) -> bool:
     if not allowed_users():
         if not pair_owner(Api(token), username, confirm, say):
             return False
+    bot_folder(folder, save=True)  # a setup works in the folder it was started from
     if (problem := start_service(folder)) is not None:
         say(problem)
         say("You can still run it in a terminal window:  vesper telegram run")
@@ -1619,7 +1634,7 @@ def command(argv: list[str]) -> int:
         if not (state["configured"] and state["paired"]):
             note("Set it up first:  vesper telegram setup")
             return 1
-        problem = start_service(Path(load_settings().get("folder") or folder))
+        problem = start_service(folder)
         note(problem or "The Telegram bot is on, in the background.")
         return 1 if problem else 0
     # run: in this window (this is also what the background service runs)
