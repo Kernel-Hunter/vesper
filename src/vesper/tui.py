@@ -855,6 +855,8 @@ class App:
             for p in themes.THEMES.values():
                 if light is not None and p.dark == light:
                     continue  # made for the other kind of background: unreadable here
+                if light is None and p.name in themes.VARIANTS and p.dark:
+                    continue  # one line per theme when the background is unknown
                 console.print(theme_swatch(p, p.name == ui.THEME.name))
             console.print()
             note("/theme <name> switches the colors and keeps them for next time.")

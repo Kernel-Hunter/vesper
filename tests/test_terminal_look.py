@@ -96,11 +96,12 @@ def test_the_terminal_background_answer_is_read():
 
 def test_a_light_theme_is_not_used_on_a_dark_terminal(monkeypatch):
     monkeypatch.setattr(themes, "background_is_light", lambda: False)
-    assert themes.resolve("daylight").name == themes.DEFAULT and themes.swapped_from.name == "daylight"
+    assert themes.resolve("daylight").name == "daylight-dark" and themes.swapped_from is None  # its dark version
     assert themes.resolve("ocean").name == "ocean" and themes.swapped_from is None
     monkeypatch.setattr(themes, "background_is_light", lambda: True)
     assert themes.resolve("ocean").name == "daylight" and themes.swapped_from.name == "ocean"
     assert themes.resolve("daylight").name == "daylight"
+    assert themes.resolve("daylight-dark").name == "daylight" and themes.swapped_from is None
     monkeypatch.setattr(themes, "background_is_light", lambda: None)  # unknown: trust the choice
     assert themes.resolve("daylight").name == "daylight" and themes.swapped_from is None
     ui.apply_theme(None)

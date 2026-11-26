@@ -57,9 +57,17 @@ THEMES: dict[str, Palette] = {p.name: p for p in (
     Palette("daylight", "Daylight", "for light terminals", False,
             "#6d4cd8", "#a23ca8", "#b86e00", "#1d1b26", "#5f5b70", "#7f7c8e",
             "#16794a", "#9a6200", "#c42b3b", "#dff3e6", "#fbe2e4"),
+    # Daylight exactly, with the text colors (and diff backgrounds) a dark terminal needs
+    Palette("daylight-dark", "Daylight", "the same colors, for dark terminals", True,
+            "#6d4cd8", "#a23ca8", "#b86e00", "#f4f2fb", "#b3aec6", "#827e94",
+            "#16794a", "#9a6200", "#c42b3b", "#16352a", "#3d1d26"),
 )}
 
 DEFAULT = "dusk"
+
+# Themes that come in two versions, one per kind of background: picking either one gives the
+# version that suits the terminal, so the choice holds in light and dark windows alike.
+VARIANTS = {"daylight": "daylight-dark", "daylight-dark": "daylight"}
 
 
 _asked: list = []  # the terminal's answer, asked once per process
@@ -140,6 +148,8 @@ def resolve(name: str | None) -> Palette:
         theme = THEMES[name]
         if light is None or theme.dark != light:
             return theme
+        if name in VARIANTS:  # the same theme, drawn for this background
+            return THEMES[VARIANTS[name]]
         swapped_from = theme
     return THEMES["daylight" if light else DEFAULT]
 

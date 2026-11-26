@@ -396,7 +396,8 @@ def theme_swatch(p: themes.Palette, current: bool = False) -> Text:
         out.append(ch, style="bold " + ramp(stops, i / max(1, len(word) - 1)))
     for i in range(14):
         out.append("▆", style=ramp(stops, i / 13))
-    out.append(f"  {p.name:<9}", style=MUTED)
+    name = p.name.removesuffix("-dark") if p.name in themes.VARIANTS else p.name  # /theme daylight fits any window
+    out.append(f"  {name:<9}", style=MUTED)
     out.append(p.mood, style=FAINT)
     return out
 
