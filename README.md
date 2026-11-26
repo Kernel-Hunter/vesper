@@ -117,7 +117,7 @@ command line and all tool output, where the normal view prints one summary line 
 | `/status` | model, folder, session id, tokens used and how full the context is |
 | `/plan` | plan mode on or off: Vesper reads and proposes a plan, and works after you approve it |
 | `/undo` | put files back to how they were before Vesper's last changes |
-| `/git` | the git safety net: `/git auto on` commits each turn's changes in this folder |
+| `/git` | the git safety net: `/git auto on` commits each turn's changes; `/git worktree` gives this chat its own copy |
 | `/rewind` | go back to before one of your messages to change it; can also put files back |
 | `/compact` | replace the older part of the conversation with a summary to free context |
 | `/mcp` | MCP servers, their status and tools; `/mcp approve`, `/mcp restart` |
@@ -157,6 +157,16 @@ during a merge or rebase, on a detached HEAD or without a git identity, and says
 failing pre-commit hook is reported, not skipped. `/undo` takes the commit back as well,
 as long as it is still the latest one. `/git` shows the repository, the setting and the
 commits of this conversation; `/git auto off` turns it off. The setting is kept per folder.
+
+To run two conversations on one repository at once, give one of them its own copy:
+`/git worktree login fix` makes a git worktree on a new branch (`vesper/login-fix`) under
+`~/.vesper/worktrees/` and moves the conversation there, so its edits never touch your
+checkout or another chat. Settings and trust carry over from the main folder. When the work
+is done, `/git merge` commits what is left, merges the branch into the branch it started
+from and removes the copy; it stops if your checkout has uncommitted changes, is on another
+branch, or the merge conflicts, and then leaves everything as it was. `/git discard` deletes
+the copy and its branch after saying how many changed files and commits would be lost. In
+the desktop app the same actions are in the Environment panel under Git.
 
 `/rewind` goes further back. It lists your last ten messages; pick one and Vesper forgets
 it and everything after it, then puts its text back in the prompt so you can change it and
@@ -612,7 +622,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.25.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.26.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

@@ -115,7 +115,7 @@ SLASH = {
     "/status": "model, folder, session and token use",
     "/plan": "plan mode on or off: Vesper reads and proposes a plan, you approve it, then it works",
     "/undo": "put files back to how they were before Vesper's last changes",
-    "/git": "git safety net: /git shows it, /git auto on commits each turn's changes in this folder",
+    "/git": "git safety net: /git auto on commits each turn; /git worktree gives this chat its own copy (merge, discard)",
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
     "/theme": "change the colors: /theme lists them, /theme dusk picks one",
@@ -741,14 +741,27 @@ class App:
             else:
                 note("Auto-commit is off for this folder.")
             return
+        if words[:1] in (["worktree"], ["copy"]):
+            self.git_worktree(arg.split(None, 1)[1] if len(arg.split(None, 1)) > 1 else "")
+            return
+        if words[:1] == ["merge"]:
+            self.git_merge()
+            return
+        if words[:1] == ["discard"]:
+            self.git_discard()
+            return
         if words:
-            note("Use /git, /git auto on or /git auto off.", WARN)
+            note("Use /git, /git auto on|off, /git worktree [name], /git merge or /git discard.", WARN)
             return
         if repo is None:
             note("This folder is not in a git repository. With one, /git auto on commits each turn's changes.")
             return
         on = gitnet.enabled(root)
         branch = gitnet.git(repo, "branch", "--show-current")[1] or "(detached)"
+        if (wt := gitnet.worktree_of(root)) is not None:
+            console.print(Text.assemble(("  separate copy of ", FAINT), (str(wt["main"]), TEXT),
+                                        (f"  from {wt['base'] or 'HEAD'}", MUTED)))
+            console.print(Text("  /git merge brings it back · /git discard throws it away", style=MUTED))
         console.print(Text.assemble(("  repository  ", FAINT), (str(repo), TEXT), ("  ⎇ ", MUTED), (branch, ACCENT_2)))
         console.print(Text.assemble(("  auto-commit ", FAINT), ("on" if on else "off", f"bold {OK if on else MUTED}"),
                                     ("  /git auto " + ("off" if on else "on"), MUTED)))
@@ -758,6 +771,71 @@ class App:
         for c in made[-5:]:
             console.print(Text.assemble(("    ", ""), (c["sha"][:7], f"bold {TEXT}"),
                                         (f"  {len(c['files'])} file{'s' if len(c['files']) != 1 else ''}", MUTED)))
+
+    def git_worktree(self, name: str) -> None:
+        from vesper import gitnet
+
+        self.wait_idle()
+        if gitnet.worktree_of(self.root) is not None:
+            note("This chat already works in a separate copy. /git merge or /git discard ends it.", WARN)
+            return
+        with console.status("Making a separate copy of the repository…"):
+            path, branch, notes = gitnet.start_worktree(self.root, name)
+        if path is None:
+            note(notes[0] if notes else "Could not make a copy.", ERR)
+            return
+        self.workspace.change_directory(str(path))
+        self._shown_cwd = self.root
+        note(f"→ this chat now works in its own copy, on branch {branch}:", ACCENT_2)
+        note("  " + tail_path(path, 80))
+        note("Other chats and the main checkout are not touched. /git merge brings the work back when it is done; "
+             "/git discard throws it away.")
+        for line in notes:
+            note(line, WARN)
+
+    def git_merge(self) -> None:
+        from vesper import gitnet
+
+        self.wait_idle()
+        info = gitnet.worktree_of(self.root)
+        if info is None:
+            note("This chat is not in a separate copy. /git worktree makes one.", WARN)
+            return
+        title = (self.session.title if self.session is not None else "") or "Work from " + info["branch"]
+        with console.status("Merging…"):
+            merged, said = gitnet.merge_worktree(info, gitnet.subject(title))
+        note(said, OK if merged else WARN)
+        if merged:
+            self.workspace.change_directory(str(info["main"]))
+            self._shown_cwd = self.root
+            note("→ back in " + tail_path(self.root, 70), ACCENT_2)
+
+    def git_discard(self) -> None:
+        from vesper import gitnet
+        from vesper.telegram import _ask
+
+        self.wait_idle()
+        info = gitnet.worktree_of(self.root)
+        if info is None:
+            note("This chat is not in a separate copy.", WARN)
+            return
+        files, commits = gitnet.discard_counts(info)
+        lost = []
+        if files:
+            lost.append(f"{files} changed file{'s' if files != 1 else ''}")
+        if commits:
+            lost.append(f"{commits} commit{'s' if commits != 1 else ''} not merged")
+        note(f"Discarding deletes the copy and branch {info['branch']}"
+             + (f", with {' and '.join(lost)}." if lost else " (nothing in it is lost).")
+             + " This cannot be undone.", WARN)
+        answer = _ask("  Discard it? [y/N] ")
+        if (answer or "").strip().lower() not in ("y", "yes"):
+            note("Kept.")
+            return
+        self.workspace.change_directory(str(info["main"]))
+        self._shown_cwd = self.root
+        gitnet.remove_worktree(info, force=True)
+        note("Discarded. → back in " + tail_path(self.root, 70), ACCENT_2)
 
     def check(self, arg: str) -> None:
         from vesper import checks

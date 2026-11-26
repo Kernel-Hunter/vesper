@@ -27,7 +27,9 @@ def command_for(root: str | Path) -> str:
     saved = onboarding.load_config().get("checks")
     if not isinstance(saved, dict):
         return ""
-    here = Path(_key(root))
+    from vesper.gitnet import settings_folder
+
+    here = settings_folder(root)  # a chat's worktree uses its repository's check
     for folder in [here, *here.parents]:
         cmd = saved.get(str(folder))
         if isinstance(cmd, str) and cmd.strip():
@@ -42,10 +44,13 @@ def set_command(root: str | Path, command: str | None) -> str:
         raise ValueError(f"A check command is one line of at most {MAX_COMMAND} characters.")
     saved = onboarding.load_config().get("checks")
     saved = dict(saved) if isinstance(saved, dict) else {}
+    from vesper.gitnet import settings_folder
+
+    key = str(settings_folder(root))
     if command:
-        saved[_key(root)] = command
+        saved[key] = command
     else:
-        saved.pop(_key(root), None)
+        saved.pop(key, None)
     onboarding.save_config({"checks": saved})
     return command
 

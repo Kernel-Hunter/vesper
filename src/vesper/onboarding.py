@@ -278,12 +278,14 @@ def first_run(cfg: dict) -> bool:
 # ---------------------------------------------------------------- trust and the desktop app
 def trust_folder(root: Path) -> bool:
     """Ask once per starting folder: text inside files can try to steer an AI model."""
+    from vesper.gitnet import settings_folder
+
     path = home() / "trusted.json"
     try:
         trusted = set(json.loads(path.read_text()))
     except (OSError, ValueError, TypeError):
         trusted = set()
-    if str(root) in trusted:
+    if str(root) in trusted or str(settings_folder(root)) in trusted:  # a chat's worktree: its repository
         return True
     console.print(Panel(Text.assemble(
         ("Start Vesper in this folder?\n\n", "bold"),

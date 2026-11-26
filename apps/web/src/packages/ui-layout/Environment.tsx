@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type CheckState } from '../connection/api'
-import { compactChat, currentBusy, currentChat, folderName, isDesktop, openFolderIn, pickFolder, setCheckCommand, useStore } from '../store/store'
+import { api, type CheckState, type GitState } from '../connection/api'
+import { compactChat, currentBusy, currentChat, folderName, gitAction, isDesktop, openFolderIn, pickFolder, setCheckCommand, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { formatCost } from '../ui-model-selection/catalog'
 import { percent, tokenCount } from './context'
@@ -30,6 +30,21 @@ export function Environment({ onClose }: { onClose: () => void }) {
     window.addEventListener('vesper:check-changed', load)
     return () => { live = false; window.removeEventListener('vesper:check-changed', load) }
   }, [workspace])
+  const [git, setGit] = useState<GitState | null>(null)
+  useEffect(() => {
+    let live = true
+    const load = (): void => { api.git(workspace).then(g => { if (live) setGit(g) }, () => { if (live) setGit(null) }) }
+    load()
+    window.addEventListener('vesper:git-changed', load)
+    return () => { live = false; window.removeEventListener('vesper:git-changed', load) }
+  }, [workspace])
+  const discard = (): void => {
+    const wt = git?.worktree
+    if (!wt) return
+    const [files, commits] = wt.lost
+    const lost = [files && `${files} changed file${files === 1 ? '' : 's'}`, commits && `${commits} unmerged commit${commits === 1 ? '' : 's'}`].filter(Boolean)
+    if (window.confirm(`Delete this copy and its branch ${wt.branch}${lost.length ? `, with ${lost.join(' and ')}` : ''}? This cannot be undone.`)) void gitAction('discard')
+  }
   const saveCheck = (value: string): void => { setEditingCheck(null); void setCheckCommand(value.trim() || 'off') }
   const changes = useMemo(() => conversationChanges(chat?.messages ?? []), [chat?.messages])
   const stats = useMemo(() => changeStats(chat?.messages ?? []), [chat?.messages])
@@ -118,6 +133,24 @@ export function Environment({ onClose }: { onClose: () => void }) {
         </>
       )}
     </div>
+    {git?.repo && <div className="env-section">
+      <div className="env-label">Git {git.auto && <span className="env-ok">auto-commit</span>}</div>
+      <div className="env-path" title={git.repo}><Icon name="branch" size={13} /> {git.branch || 'detached'}</div>
+      {git.worktree ? <>
+        <p className="env-detail">This chat works in its own copy, started from {git.worktree.base || 'HEAD'}. The main checkout and other chats are not touched.</p>
+        <div className="env-links">
+          <button type="button" disabled={busy} onClick={() => void gitAction('merge')}>Merge into {git.worktree.base || 'main checkout'}</button>
+          <button type="button" disabled={busy} onClick={discard}>Discard…</button>
+        </div>
+      </> : <>
+        <p className="env-detail">{git.auto ? 'Each answer that changes files is committed, and Undo takes the commit back.' : 'Commit each answer\'s changes, or give this chat its own copy of the repository.'}</p>
+        <div className="env-links">
+          <button type="button" disabled={busy} onClick={() => void gitAction(git.auto ? 'auto_off' : 'auto_on')}>{git.auto ? 'Stop committing' : 'Commit each answer'}</button>
+          <button type="button" disabled={busy} title="A separate checkout on its own branch: merge it back when the work is done" onClick={() => void gitAction('worktree', chat?.title)}>Work in a separate copy</button>
+        </div>
+      </>}
+      {git.blocked && git.auto && <p className="env-note">Cannot commit now: {git.blocked}.</p>}
+    </div>}
     <div className="env-section env-changes">
       <div className="env-label">Changes {changes.length > 0 && <span>{changes.length}</span>}</div>
       {changes.length ? <ul>{changes.map(([path, action]) => <li key={path} title={path}>

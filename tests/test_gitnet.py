@@ -134,3 +134,112 @@ def test_the_setting_is_per_folder_and_inherited(tmp_path):
     assert gitnet.enabled(child) and not gitnet.enabled(tmp_path)
     gitnet.set_enabled(child, False)
     assert not gitnet.enabled(child) and gitnet.enabled(tmp_path / "a")
+
+
+# ---------------------------------------------------------------- a separate copy per chat
+@pytest.fixture
+def wts(tmp_path, monkeypatch, repo):
+    home = (tmp_path / "wts").resolve()
+    monkeypatch.setattr(gitnet, "worktrees_home", lambda: home)
+    yield home
+    run(repo, "worktree", "prune")
+
+
+def test_a_worktree_is_a_separate_copy_that_keeps_the_repo_settings(repo, wts, tmp_path):
+    from vesper import checks
+
+    (repo / ".venv").mkdir()
+    gitnet.set_enabled(repo, True)
+    checks.set_command(repo, "true")
+    path, branch, notes = gitnet.start_worktree(repo, "Fix the Login bug!")
+    assert branch == "vesper/fix-the-login-bug" and path.is_dir() and (path / "a.py").exists()
+    assert path.resolve().is_relative_to(wts)
+    assert any(".venv" in n for n in notes)  # ignored files are not copied, and it says so
+    assert gitnet.settings_folder(path) == repo and gitnet.settings_folder(repo) == repo
+    assert gitnet.enabled(path) and checks.command_for(path) == "true"
+    info = gitnet.worktree_of(path)
+    assert info["main"] == repo and info["branch"] == branch and info["base"] == "main"
+    assert gitnet.worktree_of(repo) is None
+    # a turn in the copy commits on the copy's branch, not on main
+    s = session_for(path, tmp_path, [edit("a.py", "x = 1", "x = 5"), AIMessage("Done.")])
+    commit = dict(s.ask("set x to 5"))["commit"]
+    assert commit["sha"] and run(path, "branch", "--show-current") == branch
+    assert run(repo, "log", "-1", "--format=%s") == "start" and (repo / "a.py").read_text() == "x = 1\n"
+    second, branch2, _ = gitnet.start_worktree(repo, "Fix the Login bug!")
+    assert branch2 == "vesper/fix-the-login-bug-2" and second != path
+
+
+def test_merge_brings_the_work_back_and_removes_the_copy(repo, wts):
+    path, branch, _ = gitnet.start_worktree(repo, "feature")
+    (path / "a.py").write_text("x = 9\n")  # not committed yet: merge commits it first
+    merged, said = gitnet.merge_worktree(gitnet.worktree_of(path), "Set x to 9")
+    assert merged, said
+    assert (repo / "a.py").read_text() == "x = 9\n" and not path.exists()
+    assert run(repo, "branch", "--list", branch) == ""
+    assert run(repo, "log", "-1", "--format=%s") == f"Merge {branch}"
+
+
+def test_merge_never_forces(repo, wts):
+    path, branch, _ = gitnet.start_worktree(repo, "clash")
+    (path / "a.py").write_text("x = 2\n")
+    (repo / "a.py").write_text("x = 3\n")
+    merged, said = gitnet.merge_worktree(gitnet.worktree_of(path), "Clash")
+    assert not merged and "uncommitted changes" in said  # the main checkout is dirty
+    run(repo, "commit", "-qam", "main changed x")
+    merged, said = gitnet.merge_worktree(gitnet.worktree_of(path), "Clash")
+    assert not merged and "a.py" in said and path.exists()  # a conflict: nothing merged, copy kept
+    assert run(repo, "status", "--porcelain") == "" and (repo / "a.py").read_text() == "x = 3\n"
+    run(repo, "checkout", "-qb", "other")
+    merged, said = gitnet.merge_worktree(gitnet.worktree_of(path), "Clash")
+    assert not merged and "not main" in said
+
+
+def test_discard_says_what_is_lost_and_removes_it(repo, wts):
+    path, branch, _ = gitnet.start_worktree(repo, "scrap")
+    (path / "a.py").write_text("x = 7\n")
+    (path / "b.py").write_text("y\n")
+    info = gitnet.worktree_of(path)
+    assert gitnet.discard_counts(info) == (2, 0)
+    gitnet.save_work(info, "wip")
+    (path / "c.py").write_text("z\n")
+    assert gitnet.discard_counts(info) == (1, 1)
+    gitnet.remove_worktree(info, force=True)
+    assert not path.exists() and run(repo, "branch", "--list", branch) == ""
+    assert (repo / "a.py").read_text() == "x = 1\n"
+
+
+def test_no_worktree_outside_a_repository_or_before_a_first_commit(tmp_path, wts):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert gitnet.start_worktree(plain)[0] is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    run(empty, "init", "-q")
+    path, _, why = gitnet.start_worktree(empty)
+    assert path is None and "no commit" in why[0]
+
+
+def test_the_desktop_app_can_do_all_of_it(make_client, server, repo, wts):
+    engine = server.Engine()
+    engine.settings["workspace"] = str(repo)
+    client = make_client(engine=engine)
+    state = client.get("/api/git", params={"folder": str(repo)}).json()
+    assert state["repo"] == str(repo) and state["branch"] == "main" and state["auto"] is False and state["worktree"] is None
+    assert client.post("/api/chats/c1/git", json={"action": "auto_on"}).status_code == 200
+    assert client.get("/api/git", params={"folder": str(repo)}).json()["auto"] is True
+    r = client.post("/api/chats/c1/git", json={"action": "worktree", "name": "desk"})
+    assert r.status_code == 200, r.text
+    copy = Path(r.json()["cwd"])
+    assert copy.resolve().is_relative_to(wts)
+    state = client.get("/api/git", params={"folder": str(copy)}).json()
+    assert state["worktree"]["branch"] == "vesper/desk" and state["auto"] is True  # the repo's setting follows
+    (copy / "a.py").write_text("x = 4\n")
+    assert state["worktree"]["lost"] == [0, 0]
+    r = client.post("/api/chats/c1/git", json={"action": "merge"})
+    assert r.status_code == 200, r.text
+    assert Path(r.json()["cwd"]) == repo and (repo / "a.py").read_text() == "x = 4\n" and not copy.exists()
+    copy = Path(client.post("/api/chats/c1/git", json={"action": "worktree"}).json()["cwd"])
+    assert client.post("/api/chats/c1/git", json={"action": "discard"}).status_code == 200 and not copy.exists()
+    assert client.post("/api/chats/c1/git", json={"action": "merge"}).status_code == 409
+    assert client.post("/api/chats/c1/git", json={"action": "push"}).status_code == 400
+    assert client.get("/api/git", params={"folder": str(wts.parent)}).json() == {"repo": None}

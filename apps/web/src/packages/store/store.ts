@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import {
   api, ApiError, type AgentMode, type ApprovalAnswer, type ApprovalRequest, type ImageUpload, type SavedSession,
-  type ContextReport, type ServerState, type SidebarChanges, type StreamEvent, type Task, type Usage,
+  type ContextReport, type GitAction, type ServerState, type SidebarChanges, type StreamEvent, type Task, type Usage,
 } from '../connection/api'
 import { APPEARANCE_KEY, applyAppearance, loadAppearance, saveAppearance, type Appearance } from '../ui-theme/appearance'
 import { blankMsg, MAX_TOOL_OUTPUT, turnsToMessages, uid } from './history'
@@ -49,6 +49,8 @@ export interface Msg {
   plan?: boolean
   /** The files this answer changed were put back. */
   undone?: boolean
+  /** Auto-commit after this answer (/git auto on): the commit, or why there was none. */
+  commit?: { sha: string; message: string; files: string[]; skipped: string[]; error: string }
   /** The tool call the model is writing right now ("Edit, 340 characters"). */
   draft?: { name: string; chars: number }
   streaming?: boolean
@@ -540,6 +542,10 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
         case 'tasks':
           patchMessage(cid, botId, () => ({ tasks: e.data.items }))
           break
+        case 'commit':
+          patchMessage(cid, botId, () => ({ commit: e.data }))
+          window.dispatchEvent(new Event('vesper:git-changed'))
+          break
         case 'tool_start':
           flush()
           if (e.data.name === 'update_tasks') { // drawn as the task list, not as a tool row
@@ -853,12 +859,13 @@ export async function undoChanges(): Promise<void> {
   const chat = currentChat(state)
   if (!chat || state.streamingIds.includes(chat.id)) return
   try {
-    const paths = await api.undo(chat.id, chat.sessionId)
+    const { paths, note } = await api.undo(chat.id, chat.sessionId)
     if (!paths.length) { toast('Nothing to undo in this chat.'); return }
+    if (note) window.dispatchEvent(new Event('vesper:git-changed'))
     const changed = (m: Msg): boolean => m.tools.some(t => (t.name === 'edit_file' || t.name === 'write_file') && t.ok)
     const target = [...chat.messages].reverse().find(m => m.role === 'bot' && !m.undone && changed(m))
     if (target) patchMessage(chat.id, target.id, () => ({ undone: true }))
-    toast(`${paths.length} file${paths.length === 1 ? '' : 's'} put back: ${paths.map(folderName).slice(0, 4).join(', ')}${paths.length > 4 ? ', …' : ''}`)
+    toast(`${paths.length} file${paths.length === 1 ? '' : 's'} put back: ${paths.map(folderName).slice(0, 4).join(', ')}${paths.length > 4 ? ', …' : ''}${note ? ` ${note}` : ''}`)
   } catch (e) {
     toast(errorText(e), 'error')
   }
@@ -931,6 +938,26 @@ export const COMMANDS: { name: string; hint: string }[] = [
 ]
 
 /** `/check`: show, set or (with "off") remove the check command of the working folder. */
+/** /git auto on|off, a separate copy (worktree) for this chat, and merging or discarding it. */
+export async function gitAction(action: GitAction, name?: string): Promise<boolean> {
+  let chat = currentChat(state)
+  if (!chat) { // the start screen: make the chat now, so the copy belongs to it
+    const created: Chat = { id: uid(), title: 'New chat', updated: Date.now(), messages: [],
+      cwd: state.server?.settings.workspace || state.server?.home || '' }
+    draftAliases.set(draftKey(state), created.id)
+    set(st => ({ chats: [created, ...st.chats], currentId: created.id }))
+    chat = created
+  }
+  if (state.streamingIds.includes(chat.id)) { toast('Wait for this chat to finish, or stop it first.'); return false }
+  try {
+    const r = await api.gitAction(chat.id, chat.sessionId, action, name)
+    if (r.cwd) { const cwd = r.cwd; set(st => ({ chats: st.chats.map(c => c.id === chat.id ? { ...c, cwd } : c) })) }
+    window.dispatchEvent(new Event('vesper:git-changed'))
+    toast([r.message, ...(r.notes ?? [])].join(' '))
+    return true
+  } catch (e) { toast(errorText(e), 'error'); return false }
+}
+
 export async function setCheckCommand(arg: string): Promise<void> {
   const folder = currentChat(state)?.cwd || state.server?.settings.workspace || state.server?.home || ''
   try {

@@ -22,6 +22,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Readable on any background** (0.24.2): Vesper asks the terminal for its background color, and a theme made for the other kind (dark text on a black terminal) is swapped for one that fits, with a one-line note. `/theme` lists only themes that suit the window. Dim text is brighter in every theme.
 - **Git safety net, part one** (0.25.0): `/git auto on` commits each turn's changes (only Vesper's files, the user's identity and hooks, never during a merge or on a detached HEAD); `/undo` takes the commit back. A conversation deleted in another window stops saving instead of printing errors.
 - **Daylight on dark terminals** (0.25.1): Daylight keeps its exact colors in a dark terminal; only the text and diff backgrounds change so they stay readable. `/theme daylight` fits either kind of window.
+- **Git safety net, part two** (0.26.0): `/git worktree` gives a chat its own git worktree on a `vesper/` branch, so parallel chats in one repository never edit the same files; `/git merge` brings it back only when that is safe, `/git discard` asks before throwing it away. The desktop app has the same buttons, and shows which commit each answer made.
 - **Telegram and easy history** (0.22.0): `vesper telegram` puts Vesper in a Telegram chat, with every step, diff and approval shown live; in the terminal, Ctrl+R or `/resume` opens a searchable list of past conversations, recent ones show at start, and resuming replays the conversation on screen.
 - **Terminal polish** (0.21.0): solid lit wordmark with a few stars, your messages on a tinted band, a star marking each reply, keys drawn as keycaps, `/help` grouped by topic.
 - **Terminal redesign** (0.20.0): a gradient wordmark, eight themes (`/theme`), a status bar with a context meter and git branch, diffs with line numbers and tinted lines, a twinkling spinner with a moving shimmer, and code blocks marked by a thin bar.
@@ -45,11 +46,9 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Next, in order
 
-1. **Git safety net, part two.** A worktree per parallel chat, so two chats in one repository
-    never edit the same files (the commit per turn shipped in 0.25.0).
-2. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
+1. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
     gopls) go back to the agent right away.
-3. **Subagents.** A child agent with its own context for searches and side tasks.
+2. **Subagents.** A child agent with its own context for searches and side tasks.
 
 Later: hooks, memory across sessions, a browser tool, an ACP server for editors, session
 export and sharing, a checkpoint timeline, symbol and URL mentions, keybindings and a vim

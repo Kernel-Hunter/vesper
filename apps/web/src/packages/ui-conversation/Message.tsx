@@ -2,7 +2,7 @@ import { formatCost } from '../ui-model-selection/catalog'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { Task } from '../connection/api'
 import type { Msg, Thought } from '../store/store'
-import { retry, rewindTo, runPlan, toast, undoChanges, useStore } from '../store/store'
+import { folderName, retry, rewindTo, runPlan, toast, undoChanges, useStore } from '../store/store'
 import { TOOL_VERBS, ToolGroup, ToolRow } from './ToolRow'
 import { Icon } from '../ui-primitives/Icon'
 import { LogoMark } from '../ui-primitives/Logo'
@@ -230,6 +230,9 @@ function BotMessage({ msg, chatId, last }: { msg: Msg; chatId: string; last: boo
               {` · ${msg.usage.estimated ? '~' : ''}${count(msg.usage.input)} in${msg.usage.cached ? ` (${count(msg.usage.cached)} cached)` : ''}, ${msg.usage.estimated ? '~' : ''}${count(msg.usage.output)} out`}
               {msg.usage.cost != null && <span title="About this much at the provider's list prices; cached input is often cheaper">{` · ${formatCost(msg.usage.cost)}`}</span>}
               {msg.undone ? ' · changes undone' : ''}
+              {msg.commit && (msg.commit.sha
+                ? <span title={`${msg.commit.message}\n${msg.commit.files.map(folderName).join(', ')}`}>{` · committed ${msg.commit.sha.slice(0, 7)}`}</span>
+                : <span title={msg.commit.error}>{' · not committed'}</span>)}
             </span>}
           </div>
         )}

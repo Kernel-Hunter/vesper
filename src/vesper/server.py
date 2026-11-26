@@ -684,13 +684,69 @@ class Engine:
             raise HTTPException(409, "This chat is still answering. Wait for it or stop it first.")
         return entry, entry["session"]
 
-    def undo_chat(self, chat_id: str, session_id: str | None = None) -> list[str]:
-        """Put back the files the agent's latest edits changed. Returns their paths."""
+    def undo_chat(self, chat_id: str, session_id: str | None = None) -> tuple[list[str], str]:
+        """Put back the files the agent's latest edits changed. Returns their paths and what happened to an auto-commit."""
         entry, session = self._idle_session(chat_id, session_id)
         try:
-            return session.undo()
+            paths = session.undo()
+            return paths, session.undo_note if paths else ""
         except OSError as exc:
             raise HTTPException(500, f"Could not put the files back: {exc}") from exc
+        finally:
+            entry["lock"].release()
+
+    # ----- git safety net -----
+    def git_state(self, folder: str) -> dict:
+        """What the Git section of the Environment panel shows for a chat's folder."""
+        from vesper import gitnet
+
+        root = Path(folder).expanduser()
+        repo = gitnet.repo_root(root) if root.is_dir() else None
+        if repo is None:
+            return {"repo": None}
+        wt = gitnet.worktree_of(root)
+        return {"repo": str(repo), "branch": gitnet.git(repo, "branch", "--show-current")[1].strip(),
+                "auto": gitnet.enabled(root), "blocked": gitnet.blocked(repo),
+                "worktree": None if wt is None else {"branch": wt["branch"], "base": wt["base"], "main": str(wt["main"]),
+                                                     "lost": list(gitnet.discard_counts(wt))}}
+
+    def git_action(self, chat_id: str, session_id: str | None, action: str, name: str = "") -> dict:
+        """auto_on / auto_off for the chat's folder; worktree / merge / discard move the chat."""
+        from vesper import gitnet
+
+        entry, session = self._idle_session(chat_id, session_id)
+        try:
+            ws = session.workspace
+            if action in ("auto_on", "auto_off"):
+                gitnet.set_enabled(ws.root, action == "auto_on")
+                return {"message": "Auto-commit is on for this folder." if action == "auto_on" else "Auto-commit is off."}
+            info = gitnet.worktree_of(ws.root)
+            if action == "worktree":
+                if info is not None:
+                    raise HTTPException(409, "This chat already works in a separate copy.")
+                path, branch, notes = gitnet.start_worktree(ws.root, name or session.title)
+                if path is None:
+                    raise HTTPException(409, notes[0] if notes else "Could not make a copy.")
+                ws.change_directory(str(path))
+                return {"message": f"This chat now works in its own copy, on branch {branch}.", "notes": notes,
+                        "cwd": str(ws.root)}
+            if info is None:
+                raise HTTPException(409, "This chat is not in a separate copy.")
+            if action == "merge":
+                busy = [e for e in self._sessions.values() if e is not entry and e["lock"].locked()
+                        and Path(e["session"].workspace.root).resolve().is_relative_to(info["main"])]
+                if busy:
+                    raise HTTPException(409, "Another chat is working in the main checkout. Wait for it, then merge.")
+                merged, said = gitnet.merge_worktree(info, gitnet.subject(session.title or "Work from " + info["branch"]))
+                if not merged:
+                    raise HTTPException(409, said)
+                ws.change_directory(str(info["main"]))
+                return {"message": said, "cwd": str(ws.root)}
+            if action == "discard":
+                ws.change_directory(str(info["main"]))
+                gitnet.remove_worktree(info, force=True)
+                return {"message": f"The copy and branch {info['branch']} were deleted.", "cwd": str(ws.root)}
+            raise HTTPException(400, "Unknown git action.")
         finally:
             entry["lock"].release()
 
@@ -933,7 +989,26 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
     @app.post("/api/chats/{chat_id}/undo", dependencies=[Depends(auth)])
     async def undo(request: Request, chat_id: str):
         session_id = await chat_ref(request, chat_id)
-        return {"paths": await run_in_threadpool(engine.undo_chat, chat_id, session_id)}
+        paths, note = await run_in_threadpool(engine.undo_chat, chat_id, session_id)
+        return {"paths": paths, "note": note}
+
+    @app.get("/api/git", dependencies=[Depends(auth)])
+    def get_git(folder: str = ""):
+        return engine.git_state(str(check_folder(folder)))
+
+    @app.post("/api/chats/{chat_id}/git", dependencies=[Depends(auth)])
+    async def chat_git(request: Request, chat_id: str):
+        if not CHAT_ID.match(chat_id):
+            raise HTTPException(400, "chat_id must be 1-64 letters, digits, - or _.")
+        body = await json_body(request)  # read once: the body is a stream
+        session_id = body.get("session_id") if isinstance(body, dict) else None
+        if session_id is not None and not (isinstance(session_id, str) and SESSION_ID.match(session_id)):
+            raise HTTPException(400, "session_id is not a session id.")
+        action = body.get("action") if isinstance(body, dict) else None
+        if action not in ("auto_on", "auto_off", "worktree", "merge", "discard"):
+            raise HTTPException(400, 'Send {"action": "auto_on" | "auto_off" | "worktree" | "merge" | "discard"}.')
+        name = body.get("name") if isinstance(body.get("name"), str) else ""  # body is a dict: action was checked
+        return await run_in_threadpool(engine.git_action, chat_id, session_id, action, name[:60])
 
     @app.get("/api/chats/{chat_id}/changes", dependencies=[Depends(auth)])
     def chat_changes(chat_id: str, session_id: str = ""):

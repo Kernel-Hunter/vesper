@@ -169,6 +169,16 @@ export interface Usage {
 
 export interface ChangedFile { path: string; status: 'added' | 'modified' | 'deleted'; add: number; del: number; diff: string; binary: boolean }
 export interface CheckState { folder: string; command: string; suggestion: string }
+/** The Git section of the Environment panel. `lost` is [uncommitted files, unmerged commits]. */
+export interface GitState {
+  repo: string | null
+  branch?: string
+  auto?: boolean
+  blocked?: string | null
+  worktree?: { branch: string; base: string; main: string; lost: [number, number] } | null
+}
+export type GitAction = 'auto_on' | 'auto_off' | 'worktree' | 'merge' | 'discard'
+export interface GitResult { message: string; notes?: string[]; cwd?: string }
 
 export type StreamEvent =
   | { event: 'token'; data: { text: string } }
@@ -184,6 +194,7 @@ export type StreamEvent =
   | { event: 'output'; data: { line: string } }
   | { event: 'auto'; data: { kind: 'edit' | 'run' | 'web'; tool: string; path?: string; diff?: string } }
   | { event: 'tasks'; data: { items: Task[] } }
+  | { event: 'commit'; data: { sha: string; message: string; files: string[]; skipped: string[]; error: string } }
   | { event: 'usage'; data: Usage }
   | { event: 'cwd'; data: { path: string } }
   | { event: 'notice'; data: { text: string } }
@@ -300,8 +311,12 @@ export const api = {
     await request(`/api/chats/${encodeURIComponent(chatId)}/changes/revert`, { method: 'POST', json: { path, session_id: sessionId } })
   },
   /** Puts back the files the agent's latest edits changed. */
-  undo: async (chatId: string, sessionId?: string): Promise<string[]> =>
-    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[] }).paths,
+  undo: async (chatId: string, sessionId?: string): Promise<{ paths: string[]; note?: string }> =>
+    (await (await request(`/api/chats/${encodeURIComponent(chatId)}/undo`, { method: 'POST', json: { session_id: sessionId } })).json()) as { paths: string[]; note?: string },
+  git: async (folder: string): Promise<GitState> =>
+    (await (await request(`/api/git?folder=${encodeURIComponent(folder)}`)).json()) as GitState,
+  gitAction: async (chatId: string, sessionId: string | undefined, action: GitAction, name?: string): Promise<GitResult> =>
+    (await (await request(`/api/chats/${encodeURIComponent(chatId)}/git`, { method: 'POST', json: { session_id: sessionId, action, name } })).json()) as GitResult,
   /** Replaces the older turns of a chat with a summary. */
   compact: async (chatId: string, sessionId?: string): Promise<{ compacted: boolean; before: number; context: number; context_report?: ContextReport }> =>
     (await request(`/api/chats/${encodeURIComponent(chatId)}/compact`, { method: 'POST', json: { session_id: sessionId } })).json(),

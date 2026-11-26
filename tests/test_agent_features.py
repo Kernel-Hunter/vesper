@@ -632,9 +632,9 @@ def test_engine_undo_compact_and_permissions_api(server, make_client, tmp_path, 
     assert (proj / "a.txt").read_text() == "beta\n"
 
     client = make_client(engine=engine)
-    assert client.post("/api/chats/chat-1/undo", json={}).json() == {"paths": [str((proj / "a.txt").resolve())]}
+    assert client.post("/api/chats/chat-1/undo", json={}).json() == {"paths": [str((proj / "a.txt").resolve())], "note": ""}
     assert (proj / "a.txt").read_text() == "alpha\n"
-    assert client.post("/api/chats/chat-1/undo", json={}).json() == {"paths": []}
+    assert client.post("/api/chats/chat-1/undo", json={}).json() == {"paths": [], "note": ""}
     assert client.post("/api/chats/bad%20id/undo", json={}).status_code == 400
     assert client.post("/api/chats/chat-1/undo", json={"session_id": "../x"}).status_code == 400
 
