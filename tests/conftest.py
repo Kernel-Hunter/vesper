@@ -7,6 +7,7 @@ import tempfile
 
 # Before anything imports vesper: never read, migrate or write the real ~/.vesper.
 os.environ["VESPER_HOME"] = tempfile.mkdtemp(prefix="vesper-tests-")
+os.environ["VESPER_NO_BG_QUERY"] = "1"  # never write escape codes to the terminal running the tests
 # The agent's tools expand `~`. Point it at a throwaway folder so no test can touch the real home.
 os.environ["HOME"] = os.environ["USERPROFILE"] = tempfile.mkdtemp(prefix="vesper-tests-home-")
 

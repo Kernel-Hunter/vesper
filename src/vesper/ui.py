@@ -374,6 +374,11 @@ def banner(root: Path, cfg: dict, mode: str) -> None:
     console.print(keys_line([("/", "commands"), ("ctrl+r", "history"), ("@", "attach"), ("!", "shell"),
                              ("⇧ tab", "mode"), ("/theme", "look")]))
     console.print()
+    if themes.swapped_from is not None:
+        kind = "light" if not themes.swapped_from.dark else "dark"
+        note(f"Your theme, {themes.swapped_from.label}, is made for {kind} terminals and this one is not, "
+             f"so Vesper uses {THEME.label} here. /theme picks another.")
+        console.print()
 
 
 def user_bubble(text: str) -> Padding:

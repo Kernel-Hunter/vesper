@@ -85,3 +85,40 @@ def test_keycaps_bubbles_and_the_answer_star():
     assert render(ui.answer("Done.")).startswith("  Done.")
     r = ui.Renderer()
     assert r._answer("x") is not None and not r.marked
+
+
+def test_the_terminal_background_answer_is_read():
+    assert themes.background_from_reply(b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[?62;22c") is False
+    assert themes.background_from_reply(b"\x1b]11;rgb:ffff/fafa/f0f0\x07") is True
+    assert themes.background_from_reply(b"\x1b]11;rgb:1e/1e/2e\x07") is False
+    assert themes.background_from_reply(b"\x1b[?1;2c") is None  # the terminal did not say
+
+
+def test_a_light_theme_is_not_used_on_a_dark_terminal(monkeypatch):
+    monkeypatch.setattr(themes, "background_is_light", lambda: False)
+    assert themes.resolve("daylight").name == themes.DEFAULT and themes.swapped_from.name == "daylight"
+    assert themes.resolve("ocean").name == "ocean" and themes.swapped_from is None
+    monkeypatch.setattr(themes, "background_is_light", lambda: True)
+    assert themes.resolve("ocean").name == "daylight" and themes.swapped_from.name == "ocean"
+    assert themes.resolve("daylight").name == "daylight"
+    monkeypatch.setattr(themes, "background_is_light", lambda: None)  # unknown: trust the choice
+    assert themes.resolve("daylight").name == "daylight" and themes.swapped_from is None
+    ui.apply_theme(None)
+
+
+def test_every_theme_is_readable_on_its_own_background():
+    def lum(h):
+        def f(c):
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+    def contrast(a, b):
+        hi, lo = sorted((lum(a), lum(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+
+    for p in themes.THEMES.values():
+        for bg in (("#000000", "#1e1e1e") if p.dark else ("#ffffff", "#f5f5f5")):
+            assert contrast(p.text, bg) >= 7, (p.name, "text")
+            assert contrast(p.muted, bg) >= 4.5, (p.name, "muted")
+            assert contrast(p.faint, bg) >= 3.4, (p.name, "faint")

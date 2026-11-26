@@ -805,7 +805,10 @@ class App:
         name = arg.strip().lower()
         if not name:
             console.print()
+            light = themes.background_is_light()
             for p in themes.THEMES.values():
+                if light is not None and p.dark == light:
+                    continue  # made for the other kind of background: unreadable here
                 console.print(theme_swatch(p, p.name == ui.THEME.name))
             console.print()
             note("/theme <name> switches the colors and keeps them for next time.")
@@ -816,6 +819,11 @@ class App:
         chosen = apply_theme(name)
         self.cfg["theme"] = name
         save_config({"theme": name})
+        if themes.swapped_from is not None:
+            note(f"{themes.THEMES[name].label} is made for {'light' if themes.THEMES[name].dark is False else 'dark'} "
+                 f"terminals and would be hard to read in this one, so this window uses {chosen.label}. "
+                 f"It is saved and shows in a {'light' if not themes.THEMES[name].dark else 'dark'} terminal.", WARN)
+            return
         console.print(Text("  ") + gradient(f"✦ {chosen.label}") + Text(f"  {chosen.mood}", style=MUTED))
 
     def fallback(self, arg: str) -> None:
