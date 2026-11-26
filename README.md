@@ -117,6 +117,7 @@ command line and all tool output, where the normal view prints one summary line 
 | `/status` | model, folder, session id, tokens used and how full the context is |
 | `/plan` | plan mode on or off: Vesper reads and proposes a plan, and works after you approve it |
 | `/undo` | put files back to how they were before Vesper's last changes |
+| `/git` | the git safety net: `/git auto on` commits each turn's changes in this folder |
 | `/rewind` | go back to before one of your messages to change it; can also put files back |
 | `/compact` | replace the older part of the conversation with a summary to free context |
 | `/mcp` | MCP servers, their status and tools; `/mcp approve`, `/mcp restart` |
@@ -147,6 +148,15 @@ Before Vesper changes a file it keeps a copy of the old content. `/undo` puts ba
 file the last round of edits touched, including files it created, and tells the model on
 your next message. Undo covers files, so a command the agent ran (a `git commit`, a
 database migration) stays as it is.
+
+In a git repository, `/git auto on` adds a commit after every turn that changed files, so
+each step Vesper takes is its own entry in `git log`. It commits only the files Vesper wrote
+in that turn, with your own git name and your hooks; a file you had already changed before
+the turn is left out, so your unfinished work never lands in its commit. It does nothing
+during a merge or rebase, on a detached HEAD or without a git identity, and says why. A
+failing pre-commit hook is reported, not skipped. `/undo` takes the commit back as well,
+as long as it is still the latest one. `/git` shows the repository, the setting and the
+commits of this conversation; `/git auto off` turns it off. The setting is kept per folder.
 
 `/rewind` goes further back. It lists your last ten messages; pick one and Vesper forgets
 it and everything after it, then puts its text back in the prompt so you can change it and
@@ -602,7 +612,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.24.2` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.25.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

@@ -590,7 +590,7 @@ class Turn:
                         ok=data.get("ok", True), ms=data.get("ms"))
         elif kind == "auto" and data.get("kind") == "edit":
             self.mirror("diff", path=data.get("path", ""), diff=(data.get("diff") or "")[-6000:], new=data.get("new"))
-        elif kind in ("tasks", "notice", "cwd"):
+        elif kind in ("tasks", "notice", "cwd", "commit"):
             self.mirror(kind, **data)
         with self.lock:
             if kind == "token":
@@ -624,6 +624,11 @@ class Turn:
                 self._send("📋 <b>Plan</b>\n" + "\n".join(rows))
             elif kind == "notice":
                 self._send("ℹ️ " + esc(data.get("text", "")))
+            elif kind == "commit":
+                if data.get("sha"):
+                    self._send(f"🌿 Committed <code>{esc(data['sha'][:7])}</code> {esc(data.get('message', ''))}")
+                else:
+                    self._send("🌿 " + esc(data.get("error") or "Not committed."))
             elif kind == "cwd":
                 self._send(f"📂 Now in <code>{esc(data.get('path', ''))}</code>")
             elif kind == "usage":
@@ -1189,7 +1194,8 @@ class Bot:
                 self.send(chat.id, "Vesper is working. /stop first, then /undo.")
                 return
             paths = chat.session.undo()
-            self.send(chat.id, ("↩️ Put back:\n" + "\n".join(f"<code>{esc(p)}</code>" for p in paths))
+            note = f"\n{esc(chat.session.undo_note)}" if paths and chat.session.undo_note else ""
+            self.send(chat.id, ("↩️ Put back:\n" + "\n".join(f"<code>{esc(p)}</code>" for p in paths) + note)
                       if paths else "Nothing to undo.")
         elif cmd == "/status":
             from vesper.ui import model_label

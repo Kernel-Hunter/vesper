@@ -640,3 +640,27 @@ def test_an_answer_cut_off_by_an_error_says_so(proj, store):
         list(s.ask("go"))
     last = store.load_messages(s.id)[-1]
     assert last.type == "ai" and "half an answer" in last.content and "[cut off by an error]" in last.content
+
+
+def test_a_conversation_deleted_elsewhere_stops_saving_quietly(tmp_path, capsys):
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    from vesper.coder import Session
+    from vesper.store import Store
+    from vesper.workspace import Workspace
+
+    class Fake(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    store = Store(tmp_path / "v.db")
+    session = Session(Fake(messages=iter([AIMessage("one"), AIMessage("two"), AIMessage("three")])),
+                      Workspace(tmp_path, mode="yolo"), store=store)
+    list(session.ask("first"))
+    store.delete_session(session.id)  # another window, or the Telegram bot
+    events = list(session.ask("second"))
+    assert ("notice" in [k for k, _ in events]) and "deleted elsewhere" in str(events)
+    list(session.ask("third"))
+    assert store.list_sessions(5) == []  # not brought back
+    assert "could not save" not in capsys.readouterr().err

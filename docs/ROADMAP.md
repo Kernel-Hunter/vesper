@@ -20,6 +20,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Telegram in the terminal** (0.24.0): what the bot does on Telegram shows live in any open Vesper terminal, above the prompt, and in `vesper telegram watch`. The status names whoever is paired.
 - **Bot folder kept** (0.24.1): the bot's folder is saved once, so restarting it from another folder no longer moves it. `/cd` in the chat or a new setup changes it.
 - **Readable on any background** (0.24.2): Vesper asks the terminal for its background color, and a theme made for the other kind (dark text on a black terminal) is swapped for one that fits, with a one-line note. `/theme` lists only themes that suit the window. Dim text is brighter in every theme.
+- **Git safety net, part one** (0.25.0): `/git auto on` commits each turn's changes (only Vesper's files, the user's identity and hooks, never during a merge or on a detached HEAD); `/undo` takes the commit back. A conversation deleted in another window stops saving instead of printing errors.
 - **Telegram and easy history** (0.22.0): `vesper telegram` puts Vesper in a Telegram chat, with every step, diff and approval shown live; in the terminal, Ctrl+R or `/resume` opens a searchable list of past conversations, recent ones show at start, and resuming replays the conversation on screen.
 - **Terminal polish** (0.21.0): solid lit wordmark with a few stars, your messages on a tinted band, a star marking each reply, keys drawn as keycaps, `/help` grouped by topic.
 - **Terminal redesign** (0.20.0): a gradient wordmark, eight themes (`/theme`), a status bar with a context meter and git branch, diffs with line numbers and tinted lines, a twinkling spinner with a moving shimmer, and code blocks marked by a thin bar.
@@ -43,7 +44,8 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Next, in order
 
-1. **Git safety net.** A commit per turn on request, and a worktree per parallel chat.
+1. **Git safety net, part two.** A worktree per parallel chat, so two chats in one repository
+    never edit the same files (the commit per turn shipped in 0.25.0).
 2. **Diagnostics after edits.** Type errors from the language server (pyright, tsserver,
     gopls) go back to the agent right away.
 3. **Subagents.** A child agent with its own context for searches and side tasks.

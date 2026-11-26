@@ -13,6 +13,7 @@ Events from `Session.ask()`:
     ("cwd", {"path"})                                the working directory changed
     ("tasks", {"items": [{"text", "status"}]})       the agent's task list changed
     ("notice", {"text"})                             something the user should know (context trimmed)
+    ("commit", {"sha", "message", "files", "skipped", "error"})  auto-commit after the turn (gitnet)
     ("usage", {"input", "output", "cached", "context", "seconds", "tools"})   once, at the end of the turn
     ("done", {})
 """
@@ -458,6 +459,8 @@ class Session:
         self._pending: list[tuple[str, dict]] = []  # events raised by tools while the agent runs
         self._turn_id = 0                           # groups the file copies kept for undo
         self._copies: list[tuple[int, str, bytes | None]] = []  # (turn, path, old bytes), newest last
+        self._commits: list[dict] = []  # auto-commits this session made (gitnet), oldest first
+        self.undo_note = ""
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
         self._told_trimmed = False                  # the "shortened copy" notice is shown once per session
         self._told_mcp: set[str] = set()            # MCP problems already shown in this session
@@ -737,7 +740,41 @@ class Session:
             try:
                 self.store.save_messages(self.id, self.history)
             except Exception as exc:  # noqa: BLE001 - never end a turn over it, but say so
+                if self.store.get_session(self.id) is None:  # deleted in another window or from Telegram
+                    self._saved, self._deleted = False, True
+                    self._event("notice", {"text": "This conversation was deleted elsewhere, so it is no longer "
+                                                   "saved. /new starts a fresh one."})
+                    return
                 print(f"vesper: could not save session {self.id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    # ---------------------------------------------------------------- git safety net
+    def _commit_turn(self, repo: Path, turn_start: int, pre_dirty: set[str], asked: str) -> dict | None:
+        """Commits the files this turn wrote (gitnet). Returns the `commit` event, or None when
+        the turn changed nothing."""
+        from vesper import gitnet
+
+        files = sorted({p for turn, p, _ in self._copies if turn >= turn_start})
+        inside = [f for f in files if Path(f).resolve().is_relative_to(repo)]
+        if not inside:
+            return None
+        skipped = [f for f in inside if str(Path(f).resolve()) in pre_dirty]
+        ours = [f for f in inside if f not in skipped]
+        event = {"sha": "", "message": "", "files": ours, "skipped": skipped, "error": ""}
+        if not ours:
+            event["error"] = "every changed file already had changes of yours, so nothing was committed"
+            return event
+        if (why := gitnet.blocked(repo)) is not None:
+            event["error"] = f"not committed: {why}"
+            return event
+        message = gitnet.subject(asked)
+        sha, error = gitnet.commit(repo, ours, message)
+        if sha is None:
+            event["error"] = f"not committed: {error.splitlines()[-1] if error else 'git refused'}"
+            return event
+        event.update(sha=sha, message=message)
+        self._commits.append({"turn": turn_start, "sha": sha, "files": ours, "repo": str(repo)})
+        self._log("commit", detail={k: event[k] for k in ("sha", "message", "files", "skipped")})
+        return event
 
     # ---------------------------------------------------------------- undo
     def _on_change(self, path: Path, before: bytes | None) -> None:
@@ -780,7 +817,15 @@ class Session:
             self.store.delete_checkpoints(self.id, turn)
         self.workspace._seen.clear()
         self._undone += paths
-        self._log("undo", detail={"paths": paths})
+        self.undo_note = ""
+        made = [c for c in self._commits if c["turn"] <= turn]  # the commit of the turn just undone
+        if made and any(p in paths for p in made[-1]["files"]):
+            from vesper import gitnet
+
+            last = made[-1]
+            self.undo_note = gitnet.undo_commit(Path(last["repo"]), last["sha"], last["files"])
+            self._commits.remove(last)
+        self._log("undo", detail={"paths": paths, "commit": self.undo_note})
         return paths
 
     def _baselines(self) -> dict[str, bytes | None]:
@@ -864,7 +909,7 @@ class Session:
                 pass
 
     def _ensure_saved(self, first_text: str) -> None:
-        if self.store is None:
+        if self.store is None or getattr(self, "_deleted", False):  # deleted elsewhere: do not bring it back
             return
         if not self._saved:
             self.title = " ".join(first_text.split())[:80]
@@ -1024,6 +1069,12 @@ class Session:
         self._log("prompt", detail={"text": shown or text})
         started = time.monotonic()
         self._turn_id = max(int(time.time() * 1000), self._turn_id + 1)
+        turn_start, repo, pre_dirty = self._turn_id, None, set()
+        if self.workspace.mode != "plan":
+            from vesper import gitnet
+
+            if gitnet.enabled(self.workspace.root) and (repo := gitnet.repo_root(self.workspace.root)):
+                pre_dirty = gitnet.dirty(repo)  # the user's own unfinished work stays out of the commit
         if self._undone:  # the model still remembers its edits; tell it they are gone
             text += ("\n\n<note>The user undid your changes to these files; they are back to how they were "
                      "before: " + ", ".join(self._undone) + "</note>")
@@ -1151,6 +1202,10 @@ class Session:
             # Keep what happened even if the turn was stopped or failed half way.
             unused = self._end_steering()
             keep(final or messages, partial, failed)
+        if repo is not None and not self.workspace.stopped:
+            event = self._commit_turn(repo, turn_start, pre_dirty, shown or text)
+            if event is not None:
+                yield "commit", event
         usage = self._usage(final or [], len(messages), started + (self.workspace.waited - waited_before), tools)
         self._log("usage", detail=usage, ms=int(usage["seconds"] * 1000))
         yield "usage", usage

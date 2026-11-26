@@ -924,6 +924,21 @@ def print_events(events: list[dict], full: bool = False, out: Console | None = N
 apply_theme()  # the default theme until the config names one
 
 
+def commit_line(event: dict) -> Text:
+    """The line under a turn that auto-commit (gitnet) committed, or why it did not."""
+    if event.get("sha"):
+        files = event.get("files") or []
+        line = Text.assemble(("  ⎇ ", f"bold {ACCENT_2}"), ("committed ", MUTED), (event["sha"][:7], f"bold {TEXT}"),
+                             ("  " + event.get("message", ""), TEXT),
+                             (f"  · {len(files)} file{'s' if len(files) != 1 else ''}", MUTED))
+    else:
+        line = Text.assemble(("  ⎇ ", f"bold {WARN}"), (event.get("error") or "not committed", WARN))
+    if event.get("skipped"):
+        names = ", ".join(Path(p).name for p in event["skipped"][:4])
+        line.append(f"\n    left out, they already had your changes: {names}", style=MUTED)
+    return line
+
+
 # ---------------------------------------------------------------- what the Telegram bot is doing
 class FeedPrinter:
     """Turns the Telegram bot's live feed (`telegram.Feed`) into the lines a terminal turn
@@ -977,6 +992,8 @@ class FeedPrinter:
             out.append(tasks_block(event.get("items") or []))
         elif kind in ("notice", "cwd"):
             out.append(Text("  " + str(event.get("text") or f"now in {event.get('path', '')}"), style=MUTED))
+        elif kind == "commit":
+            out.append(commit_line(event))
         elif kind == "done":
             bits = []
             if event.get("seconds") is not None:

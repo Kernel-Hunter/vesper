@@ -64,6 +64,7 @@ from vesper.ui import (
     WARN,
     FeedPrinter,
     Renderer,
+    commit_line,
     apply_theme,
     banner,
     console,
@@ -114,6 +115,7 @@ SLASH = {
     "/status": "model, folder, session and token use",
     "/plan": "plan mode on or off: Vesper reads and proposes a plan, you approve it, then it works",
     "/undo": "put files back to how they were before Vesper's last changes",
+    "/git": "git safety net: /git shows it, /git auto on commits each turn's changes in this folder",
     "/rewind": "go back to before one of your messages and edit it (/rewind N; can put files back too)",
     "/compact": "summarize the older part of this conversation to free context",
     "/theme": "change the colors: /theme lists them, /theme dusk picks one",
@@ -135,7 +137,7 @@ ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sess
 HELP_GROUPS = [
     ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/logs"]),
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
-    ("How Vesper works", ["/plan", "/mode", "/check", "/cd", "/permissions", "/mcp", "/status"]),
+    ("How Vesper works", ["/plan", "/mode", "/check", "/git", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
     ("Elsewhere", ["/telegram", "/app"]),
 ]
@@ -435,8 +437,13 @@ class App:
             r.stop()
             note(data["text"], WARN)
             r.start()
+        elif event == "commit":
+            self._commit_event = data  # shown under the answer, with the footer
         elif event == "usage":
             r.flush()
+            if getattr(self, "_commit_event", None):
+                console.print(commit_line(self._commit_event))
+                self._commit_event = None
             console.print(turn_footer(data, self.session.context_tokens))
         elif event == "error":
             r.flush()
@@ -672,6 +679,8 @@ class App:
         for path in paths:
             console.print(Text.assemble(("  ↩ ", ACCENT_2), (self.workspace.rel(Path(path)), "")))
         note(f"{len(paths)} file{'s' if len(paths) != 1 else ''} put back. Commands Vesper ran are not undone.")
+        if self.session.undo_note:
+            note(self.session.undo_note)
 
     def rewind(self, arg: str = "") -> None:
         """/rewind [N]: forget one of the user's messages and everything after it; its text comes back to edit."""
@@ -712,6 +721,43 @@ class App:
             note("Only the conversation went back: that message is older than file tracking.", WARN)
         note("Went back. Your message is in the prompt: edit it and press Enter, or clear it.")
         self._prefill = out["text"]
+
+    def git(self, arg: str) -> None:
+        from vesper import gitnet
+
+        words = arg.lower().split()
+        root = self.workspace.root
+        repo = gitnet.repo_root(root)
+        if words[:1] == ["auto"] and words[1:2] in (["on"], ["off"]):
+            on = words[1] == "on"
+            gitnet.set_enabled(root, on)
+            if on and repo is None:
+                note("Auto-commit is on for this folder, but it is not a git repository yet (git init).", WARN)
+            elif on:
+                why = gitnet.blocked(repo)
+                note("After each turn that changes files, Vesper commits them with your git name and hooks. "
+                     "Files you had already changed stay out. /undo takes the commit back too."
+                     + (f"\n  Right now it cannot: {why}." if why else ""))
+            else:
+                note("Auto-commit is off for this folder.")
+            return
+        if words:
+            note("Use /git, /git auto on or /git auto off.", WARN)
+            return
+        if repo is None:
+            note("This folder is not in a git repository. With one, /git auto on commits each turn's changes.")
+            return
+        on = gitnet.enabled(root)
+        branch = gitnet.git(repo, "branch", "--show-current")[1] or "(detached)"
+        console.print(Text.assemble(("  repository  ", FAINT), (str(repo), TEXT), ("  ⎇ ", MUTED), (branch, ACCENT_2)))
+        console.print(Text.assemble(("  auto-commit ", FAINT), ("on" if on else "off", f"bold {OK if on else MUTED}"),
+                                    ("  /git auto " + ("off" if on else "on"), MUTED)))
+        if on and (why := gitnet.blocked(repo)):
+            console.print(Text(f"  cannot commit now: {why}", style=WARN))
+        made = self.session._commits if self.session is not None else []
+        for c in made[-5:]:
+            console.print(Text.assemble(("    ", ""), (c["sha"][:7], f"bold {TEXT}"),
+                                        (f"  {len(c['files'])} file{'s' if len(c['files']) != 1 else ''}", MUTED)))
 
     def check(self, arg: str) -> None:
         from vesper import checks
@@ -1192,6 +1238,8 @@ class App:
             self.set_mode(self._before_plan if self.mode == "plan" else "plan")
         elif cmd == "/undo":
             self.undo()
+        elif cmd == "/git":
+            self.git(arg)
         elif cmd == "/rewind":
             self.rewind(arg)
         elif cmd == "/compact":
