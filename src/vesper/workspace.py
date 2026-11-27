@@ -33,7 +33,7 @@ from pathlib import Path
 
 from langchain.tools import tool
 
-from vesper import permissions
+from vesper import diagnostics, permissions
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env", "__pycache__", ".mypy_cache",
@@ -452,6 +452,7 @@ class Workspace:
         old = _read_text(p) if p.exists() else None
         if old is not None and old == content:
             return f"{self.rel(p)} already has this content; nothing changed."
+        check = diagnostics.start(p, old)  # the language server starts while the user reads the diff
         self._gate("edit", {
             "tool": "write_file", "path": self.rel(p), "new": old is None,
             "diff": _diff(self.rel(p), old or "", content),
@@ -460,7 +461,8 @@ class Workspace:
         p.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(p, content)
         verb = "Created" if old is None else "Wrote"
-        return f"{verb} {self.rel(p)} ({len(content.splitlines())} lines)."
+        done = f"{verb} {self.rel(p)} ({len(content.splitlines())} lines)."
+        return done + (check.report(content, self.rel(p)) if check else "")
 
     def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         p = self.resolve(path)
@@ -493,12 +495,14 @@ class Workspace:
             start, end = blocks[0]
             new_text = text[:start] + _fit_block(text[start:end], old_string, new_string) + text[end:]
             hits, how = 1, "; matched ignoring indentation"
+        check = diagnostics.start(p, text)
         self._gate("edit", {"tool": "edit_file", "path": self.rel(p), "diff": _diff(self.rel(p), text, new_text)},
                    strict=self._is_credential_path(p))
         self._changing(p)
         _atomic_write(p, new_text)
         n = hits if replace_all else 1
-        return f"Edited {self.rel(p)} ({n} change{'s' if n > 1 else ''}{how})."
+        done = f"Edited {self.rel(p)} ({n} change{'s' if n > 1 else ''}{how})."
+        return done + (check.report(new_text, self.rel(p)) if check else "")
 
     # ---------------------------------------------------------------- tasks and the web
     def update_tasks(self, tasks: str) -> str:

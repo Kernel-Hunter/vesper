@@ -122,6 +122,7 @@ SLASH = {
     "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
+    "/diagnostics": "type errors from the language server after each edit go back to Vesper (/diagnostics on|off)",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
     "/mcp": "MCP servers and their tools (/mcp approve [name], /mcp restart [name])",
     "/think": "how hard reasoning models think: off | low | medium | high",
@@ -137,7 +138,7 @@ ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sess
 HELP_GROUPS = [
     ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/logs"]),
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
-    ("How Vesper works", ["/plan", "/mode", "/check", "/git", "/cd", "/permissions", "/mcp", "/status"]),
+    ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/git", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
     ("Elsewhere", ["/telegram", "/app"]),
 ]
@@ -859,6 +860,24 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def diagnostics(self, arg: str) -> None:
+        from vesper import diagnostics
+
+        word = arg.strip().lower()
+        if word in ("on", "off"):
+            diagnostics.set_enabled(word == "on")
+            note("Diagnostics are on: after each edit, the language server's new errors go back to Vesper."
+                 if word == "on" else "Diagnostics are off. Language servers are stopped.")
+            return
+        state = "on" if diagnostics.enabled() else "off"
+        rows = diagnostics.status(self.workspace.root)
+        found = [f"{name} ({how})" for name, how in rows if how != "not installed"]
+        missing = [name for name, how in rows if how == "not installed"]
+        note(f"Diagnostics are {state}. " + (f"Language servers: {', '.join(found)}. " if found else
+             "No language server is installed for this folder. ")
+             + (f"Not installed: {', '.join(missing)}. " if missing else "")
+             + f"Turn {'off' if state == 'on' else 'on'} with /diagnostics {'off' if state == 'on' else 'on'}.")
+
     def vesper_command(self, line: str) -> None:
         """`vesper ...` typed at Vesper's own prompt: do the obvious thing instead of asking the model."""
         words = line.split()[1:]
@@ -1326,6 +1345,8 @@ class App:
             self.compact()
         elif cmd == "/check":
             self.check(arg)
+        elif cmd == "/diagnostics":
+            self.diagnostics(arg)
         elif cmd == "/small":
             self.small(arg)
         elif cmd == "/fallback":

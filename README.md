@@ -188,6 +188,17 @@ again, up to three times. Answers that change no files skip the check. In the de
 the Environment panel has the same setting, with a one-click suggestion. The command is
 saved for the folder in `~/.vesper/config.json`, so a cloned repository cannot set one.
 
+### Type errors right after an edit
+
+When the agent writes or edits a file, Vesper asks the language server for that file what is
+wrong with it and adds the errors the edit introduced to the result, so the agent sees a wrong
+argument or a broken import at once. It uses the servers you already have: basedpyright or
+pyright for Python, typescript-language-server for TypeScript and JavaScript, gopls for Go and
+clangd for C and C++, found on your PATH or in the project's `.venv` or `node_modules`.
+Nothing is installed for you. Errors that were in the file before the edit are left out, and
+a slow or missing server adds nothing. `/diagnostics` shows which servers it found;
+`/diagnostics off` turns it off.
+
 ### Documents
 
 `read_file` reads more than code and text. Word (`.docx`), PowerPoint (`.pptx`), Excel
@@ -622,7 +633,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.26.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.27.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap
