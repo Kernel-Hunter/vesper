@@ -454,6 +454,11 @@ def summarize_output(name: str, output: str, ok: bool, limit: int = 6) -> Text:
         if len(body) > len(rest):
             t.append(f"\n      +{len(body) - len(rest)} more lines (ctrl+o shows all)", style=FAINT)
         return t
+    if name in ("write_file", "edit_file") and len(lines) > 1:  # language server errors follow
+        t = Text(lines[0][:200], style=MUTED)
+        for line in lines[1:12]:
+            t.append("\n      " + line.strip()[:160], style=WARN)
+        return t
     return Text(lines[0][:200] if lines else "done", style=MUTED)
 
 
@@ -473,7 +478,7 @@ def tool_end_line(name: str, output: str, ok: bool, ms: int | None, verbose: boo
     line += summarize_output(name, output, ok, VERBOSE_OUTPUT_LINES if verbose else 6)
     if ms is not None and ms >= 1000:
         line.append(f"  {fmt_duration(ms / 1000)}", style=FAINT)
-    if verbose and ok and len(output.splitlines()) > 1 and name != "run_command":
+    if verbose and ok and len(output.splitlines()) > 1 and name not in ("run_command", "write_file", "edit_file"):
         shown = output.splitlines()[:VERBOSE_OUTPUT_LINES]
         for row in shown:
             line.append("\n      " + row[:200], style=MUTED)

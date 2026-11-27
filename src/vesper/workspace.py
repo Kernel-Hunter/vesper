@@ -452,7 +452,8 @@ class Workspace:
         old = _read_text(p) if p.exists() else None
         if old is not None and old == content:
             return f"{self.rel(p)} already has this content; nothing changed."
-        check = diagnostics.start(p, old)  # the language server starts while the user reads the diff
+        # the language server starts while the user reads the diff (plan mode refuses the write)
+        check = diagnostics.start(p, old) if self.mode != "plan" else None
         self._gate("edit", {
             "tool": "write_file", "path": self.rel(p), "new": old is None,
             "diff": _diff(self.rel(p), old or "", content),
@@ -495,7 +496,7 @@ class Workspace:
             start, end = blocks[0]
             new_text = text[:start] + _fit_block(text[start:end], old_string, new_string) + text[end:]
             hits, how = 1, "; matched ignoring indentation"
-        check = diagnostics.start(p, text)
+        check = diagnostics.start(p, text) if self.mode != "plan" else None
         self._gate("edit", {"tool": "edit_file", "path": self.rel(p), "diff": _diff(self.rel(p), text, new_text)},
                    strict=self._is_credential_path(p))
         self._changing(p)

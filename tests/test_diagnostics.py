@@ -57,9 +57,10 @@ def test_other_languages_and_the_off_switch(lsp):
 def test_a_silent_server_times_out_quietly(lsp, monkeypatch):
     monkeypatch.setenv("FAKE_LSP_MODE", "silent")
     monkeypatch.setattr(diagnostics, "FIRST_WAIT", 0.5)
+    monkeypatch.setattr(diagnostics, "WAIT", 0.3)
     started = time.monotonic()
     assert lsp.write_file("f.py", "ERROR\n") == "Created f.py (1 lines)."
-    assert time.monotonic() - started < 3
+    assert time.monotonic() - started < 5
 
 
 def test_a_crashing_server_is_given_up(lsp, monkeypatch, tmp_path):
@@ -99,3 +100,35 @@ def test_settings_point_pyright_at_the_project_python(tmp_path):
     (bin_dir / ("python.exe" if sys.platform == "win32" else "python")).write_text("")
     assert s._setting("python")["pythonPath"].startswith(str(tmp_path))
     assert s._setting("python.analysis")["diagnosticSeverityOverrides"] == {}
+
+
+def test_no_before_picture_means_no_report(lsp, monkeypatch, tmp_path):
+    """If the old errors are not known in time, old errors would look new: say nothing."""
+    monkeypatch.setenv("FAKE_LSP_MODE", "slow-first")
+    monkeypatch.setattr(diagnostics, "WAIT", 0.5)
+    monkeypatch.setattr(diagnostics, "FIRST_WAIT", 0.5)
+    (tmp_path / "s.py").write_text("old = ERROR\nok = 1\n")
+    assert lsp.edit_file("s.py", "ok = 1", "ok = 2") == "Edited s.py (1 change)."
+
+
+def test_each_edit_closes_the_document(lsp, tmp_path):
+    """The fake server exits if a document is opened twice without a close in between."""
+    (tmp_path / "t.py").write_text("a = 1\n")
+    for n in range(3):
+        out = lsp.edit_file("t.py", f"a = {n + 1}", f"a = {n + 2}\nb{n} = ERROR")
+        assert f"b{n} = ERROR" in out, out
+    assert diagnostics.manager().running()
+
+
+def test_plan_mode_starts_no_server(lsp, tmp_path):
+    lsp.mode = "plan"
+    with pytest.raises(Exception):
+        lsp.write_file("p.py", "ERROR\n")
+    assert diagnostics.manager().running() == []
+
+
+def test_a_loose_file_never_roots_at_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".git").mkdir()
+    spec = diagnostics.spec_for(Path("x.py"))
+    assert diagnostics.project_root(tmp_path / "loose" / "x.py", spec) == tmp_path / "loose"

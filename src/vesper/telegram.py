@@ -551,7 +551,10 @@ def result_text(name: str, output: str, ok: bool) -> str:
     from vesper.ui import summarize_output
 
     first = summarize_output(name, output, ok, limit=0).plain.splitlines()
-    return ("" if ok else "❌ ") + esc(first[0] if first else "done")
+    text = ("" if ok else "❌ ") + esc(first[0] if first else "done")
+    if ok and name in ("write_file", "edit_file") and len(first) > 1:  # language server errors
+        text += "\n<blockquote>" + esc("\n".join(line.strip() for line in first[1:])) + "</blockquote>"
+    return text
 
 
 class Turn:

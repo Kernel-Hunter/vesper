@@ -33,6 +33,8 @@ SETTLE = 0.15      # after the first report, how long to wait for a later one th
 MAX_LINES = 10
 MAX_CHARS = 1500
 MAX_SERVERS = 4    # the least recently used one stops when a fifth starts
+IDLE = 600.0       # a server unused this long is stopped (it can hold hundreds of MB)
+MAX_TIMEOUTS = 3   # a server that misses this many reports in a row is given up for its project
 
 
 @dataclass(frozen=True)
@@ -89,21 +91,37 @@ def spec_for(path: Path) -> Spec | None:
 
 
 def project_root(path: Path, spec: Spec) -> Path:
-    """The nearest folder above `path` holding one of the spec's marker files."""
+    """The nearest folder above `path` holding one of the spec's marker files. The walk stops
+    below the home folder, so a loose file never makes a server index all of home."""
+    home = Path.home().resolve()
     for folder in path.parents:
+        if folder == home or folder in home.parents:
+            break
         if any((folder / m).exists() for m in spec.markers):
             return folder
     return path.parent
 
 
+def _roots(root: Path) -> list[Path]:
+    """The project, and for one of Vesper's worktree copies also its main checkout, which
+    holds the `.venv` and `node_modules` the copy lacks."""
+    try:
+        from .gitnet import settings_folder
+
+        main = settings_folder(root)
+    except Exception:
+        main = root
+    return [root] if main == root else [root, main]
+
+
 def _venv_bin(root: Path) -> list[Path]:
     sub = "Scripts" if os.name == "nt" else "bin"
-    return [root / v / sub for v in (".venv", "venv")]
+    return [r / v / sub for r in _roots(root) for v in (".venv", "venv")]
 
 
 def find_command(spec: Spec, root: Path) -> list[str] | None:
     """The server command for this project: its own install first, then PATH."""
-    local = [*_venv_bin(root), root / "node_modules" / ".bin"]
+    local = [*_venv_bin(root), *(r / "node_modules" / ".bin" for r in _roots(root))]
     for cmd in spec.commands:
         for folder in local:
             if folder.is_dir():
@@ -140,6 +158,8 @@ class Server:
         self.label = Path(command[0]).stem.removesuffix("-langserver")  # basedpyright, gopls, ...
         self.used = time.monotonic()
         self.dead = False
+        self.timeouts = 0  # reports missed in a row
+        self.answered = False  # it has sent at least one report: no longer starting
         self._lock = threading.Lock()   # one document sync at a time
         self._write = threading.Lock()
         self._cond = threading.Condition()
@@ -305,7 +325,22 @@ class Server:
             except (OSError, ValueError):
                 self.dead = True
                 return None
-            return self._wait(key, before, version, timeout)
+            diags = self._wait(key, before, version, timeout)
+            self.timeouts = 0 if diags is not None else self.timeouts + 1
+            self.answered = self.answered or diags is not None
+            return diags
+
+    def close_doc(self, path: Path) -> None:
+        """Forget the text Vesper sent. An open document overrides the disk for the server, and
+        /undo, commands and the user change files without telling it."""
+        key = _key(path)
+        with self._lock:
+            if self._versions.pop(key, None) is None:
+                return
+            try:
+                self.notify("textDocument/didClose", {"textDocument": {"uri": path.as_uri()}})
+            except (OSError, ValueError):
+                self.dead = True
 
     def _wait(self, key: str, before: int, version: int, timeout: float) -> list | None:
         end = time.monotonic() + timeout
@@ -348,7 +383,12 @@ class Manager:
         root = project_root(path, spec)
         key = (spec.name, _key(root))
         with self._lock:
+            self._stop_idle()
             server = self._servers.get(key)
+            if server and not server.dead and server.timeouts >= MAX_TIMEOUTS:  # alive but too slow
+                self._servers.pop(key).close()
+                self._failed[key] = 2
+                return None, False
             if server and not server.dead:
                 return server, False
             if server:  # it crashed
@@ -368,6 +408,7 @@ class Manager:
                 self._failed[key] = self._failed.get(key, 0) + 1
                 return None, False
             self._servers[key] = server
+            self._watch()
         if not server.initialize(FIRST_WAIT):
             with self._lock:
                 if self._servers.get(key) is server:
@@ -376,6 +417,38 @@ class Manager:
             server.close()
             return None, False
         return server, True
+
+    def _stop_idle(self) -> None:  # with self._lock held
+        now = time.monotonic()
+        for key in [k for k, s in self._servers.items() if s.dead or now - s.used > IDLE]:
+            server = self._servers.pop(key)
+            if server.dead:  # it crashed: counts toward giving up on it
+                self._failed[key] = self._failed.get(key, 0) + 1
+            threading.Thread(target=server.close, daemon=True).start()
+
+    def _watch(self) -> None:  # with self._lock held: stop idle servers even when no edit comes
+        if getattr(self, "_watcher", None) and self._watcher.is_alive():
+            return
+
+        def loop():
+            while True:
+                time.sleep(min(60.0, IDLE))
+                with self._lock:
+                    self._stop_idle()
+                    if not self._servers:
+                        return
+
+        self._watcher = threading.Thread(target=loop, daemon=True, name="lsp-idle")
+        self._watcher.start()
+
+    def is_warm(self, path: Path) -> bool:
+        """A server for this file is running and has answered before."""
+        spec = spec_for(path)
+        if spec is None:
+            return False
+        with self._lock:
+            server = self._servers.get((spec.name, _key(project_root(path, spec))))
+            return bool(server and not server.dead and getattr(server, "answered", False))
 
     def running(self) -> list[Server]:
         with self._lock:
@@ -414,31 +487,48 @@ def _sig(d: dict) -> tuple:
 
 class Check:
     """Started before an edit is approved, so the server's startup and the before-picture run
-    while the user reads the diff; `report` after the write gives the errors the edit added."""
+    while the user reads the diff; `report` after the write gives the errors the edit added.
+    The time it adds after the write is bounded: WAIT for a running server, FIRST_WAIT when it
+    is starting. A server that is not ready by then finishes starting for the next edit."""
 
     def __init__(self, path: Path, old_text: str | None):
         self.path = path
         self.server: Server | None = None
-        self.fresh = False
-        self.baseline: list | None = [] if old_text is None else None
-        self._started = time.monotonic()
+        self.existed = old_text is not None
+        self.baseline: list | None = None if self.existed else []
+        self._done = threading.Event()
+        self._abandoned = False
         self._thread = threading.Thread(target=self._prepare, args=(old_text,), daemon=True, name="lsp-prepare")
         self._thread.start()
 
     def _prepare(self, old_text: str | None) -> None:
         try:
-            self.server, self.fresh = manager().server_for(self.path)
-            if self.server and old_text is not None:
-                self.baseline = self.server.check(self.path, old_text, FIRST_WAIT if self.fresh else WAIT)
+            server, fresh = manager().server_for(self.path)
+            if server and old_text is not None:
+                self.baseline = server.check(self.path, old_text, FIRST_WAIT if fresh else WAIT)
+            self.server = server
         except Exception:
             self.server = None
+        finally:
+            self._done.set()
+            if self._abandoned and self.server:
+                self.server.close_doc(self.path)
 
     def report(self, new_text: str, shown_path: str) -> str:
+        server = None
         try:
-            self._thread.join(max(2 * FIRST_WAIT - (time.monotonic() - self._started), 0.5))
-            if self._thread.is_alive() or self.server is None or self.server.dead:
+            warm = manager().is_warm(self.path)
+            deadline = time.monotonic() + (WAIT if warm else FIRST_WAIT)
+            if not self._done.wait(max(deadline - time.monotonic(), 0)):
+                self._abandoned = True
                 return ""
-            diags = self.server.check(self.path, new_text, FIRST_WAIT if self.fresh and self.baseline is None else WAIT)
+            server = self.server
+            if server is None or server.dead:
+                return ""
+            if self.existed and self.baseline is None:  # no before-picture: every old error would look new
+                return ""
+            left = deadline - time.monotonic()
+            diags = server.check(self.path, new_text, max(left, 1.0))
             if diags is None:
                 return ""
             before: dict[tuple, int] = {}
@@ -448,11 +538,20 @@ class Check:
             for d in _errors(diags):
                 if before.get(_sig(d), 0) > 0:
                     before[_sig(d)] -= 1
-                else:
+                elif not _ignored(d, server):
                     new.append(d)
-            return format_errors(new, shown_path, self.server.label, len(_errors(diags)) - len(new))
+            return format_errors(new, shown_path, server.label, len(_errors(diags)) - len(new))
         except Exception:
             return ""
+        finally:
+            if server is not None:
+                server.close_doc(self.path)
+
+
+def _ignored(d: dict, server: Server) -> bool:
+    """In a worktree copy, packages the copy has not installed look missing to TypeScript."""
+    return (server.spec.name == "typescript" and str(d.get("code")) == "2307"
+            and len(_roots(server.root)) > 1)
 
 
 def format_errors(errors: list[dict], shown_path: str, server: str, old: int = 0) -> str:
