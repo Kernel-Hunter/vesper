@@ -319,6 +319,11 @@ class Server:
                 self.proc.wait(timeout=1)
         except Exception:
             pass
+        for pipe in (self.proc.stdin, self.proc.stdout):
+            try:
+                pipe.close()  # a pipe left to the garbage collector can fail loudly on Windows
+            except Exception:
+                pass
 
     # --- documents
     def check(self, path: Path, text: str, timeout: float) -> list | None:

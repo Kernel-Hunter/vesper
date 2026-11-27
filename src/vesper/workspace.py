@@ -916,7 +916,16 @@ def _atomic_write(p: Path, content: str) -> None:
                 os.chmod(tmp, p.stat().st_mode & 0o7777)
             except OSError:
                 pass
-        os.replace(tmp, p)
+        for attempt in range(20):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:
+                # Windows refuses to replace a file another process has open for a moment
+                # (antivirus, the search indexer, a language server reading it): try again.
+                if os.name != "nt" or attempt == 19:
+                    raise
+                time.sleep(0.05)
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
