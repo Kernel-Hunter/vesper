@@ -5,6 +5,7 @@ it asks the client for its configuration first and reports nothing until it gets
 FAKE_LSP_MODE=silent: never reports. FAKE_LSP_MODE=crash: exits on the first document.
 FAKE_LSP_MODE=slow-first: the first report comes 1.5 s late. Opening a document that is
 already open is a client bug: the server exits, as a strict server might.
+FAKE_LSP_MODE=pull: never pushes; answers textDocument/diagnostic requests instead (TypeScript 7).
 """
 import json
 import time
@@ -40,13 +41,10 @@ def read():
     return json.loads(inp.read(length))
 
 
-def publish(uri, version, text):
-    global reported
-    if MODE == "silent":
-        return
-    if MODE == "slow-first" and not reported:
-        time.sleep(1.5)
-    reported += 1
+texts: dict = {}
+
+
+def found(text):
     diags = []
     for n, line in enumerate(text.splitlines()):
         for word, severity in (("ERROR", 1), ("WARN", 2)):
@@ -54,7 +52,18 @@ def publish(uri, version, text):
             if col >= 0:
                 diags.append({"range": {"start": {"line": n, "character": col}, "end": {"line": n, "character": col + 5}},
                               "severity": severity, "message": f"{word.lower()}: {line.strip()}", "source": "fake"})
-    send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": diags}})
+    return diags
+
+
+def publish(uri, version, text):
+    global reported
+    texts[uri] = text
+    if MODE in ("silent", "pull"):
+        return
+    if MODE == "slow-first" and not reported:
+        time.sleep(1.5)
+    reported += 1
+    send({"method": "textDocument/publishDiagnostics", "params": {"uri": uri, "version": version, "diagnostics": found(text)}})
 
 
 while True:
@@ -64,7 +73,8 @@ while True:
     method = msg.get("method")
     if method == "initialize":
         send({"id": "cfg", "method": "workspace/configuration", "params": {"items": [{"section": "python"}]}})
-        send({"id": msg["id"], "result": {"capabilities": {"textDocumentSync": 1}}})
+        caps = {"textDocumentSync": 1, **({"diagnosticProvider": {"interFileDependencies": True}} if MODE == "pull" else {})}
+        send({"id": msg["id"], "result": {"capabilities": caps}})
     elif msg.get("id") == "cfg" and "result" in msg:
         configured = True
         for doc in waiting:
@@ -85,6 +95,9 @@ while True:
             publish(*doc)
         else:
             waiting.append(doc)
+    elif method == "textDocument/diagnostic":
+        uri = msg["params"]["textDocument"]["uri"]
+        send({"id": msg["id"], "result": {"kind": "full", "items": found(texts.get(uri, ""))}})
     elif method == "textDocument/didClose":
         open_docs.discard(msg["params"]["textDocument"]["uri"])
     elif method == "shutdown":

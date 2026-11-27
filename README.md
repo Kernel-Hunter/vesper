@@ -193,7 +193,8 @@ saved for the folder in `~/.vesper/config.json`, so a cloned repository cannot s
 When the agent writes or edits a file, Vesper asks the language server for that file what is
 wrong with it and adds the errors the edit introduced to the result, so the agent sees a wrong
 argument or a broken import at once. It uses the servers you already have: basedpyright or
-pyright for Python, typescript-language-server for TypeScript and JavaScript, gopls for Go and
+pyright for Python, TypeScript 7's own server or typescript-language-server for TypeScript
+and JavaScript, gopls for Go and
 clangd for C and C++, found on your PATH or in the project's `.venv` or `node_modules`.
 Nothing is installed for you. Errors that were in the file before the edit are left out, and
 a slow or missing server adds nothing. `/diagnostics` shows which servers it found;

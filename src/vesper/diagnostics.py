@@ -53,7 +53,7 @@ SPECS = (
          (("basedpyright-langserver", "--stdio"), ("pyright-langserver", "--stdio")),
          ("pyrightconfig.json", "pyproject.toml", "setup.py", "setup.cfg", ".git")),
     Spec("typescript", (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"),
-         (("typescript-language-server", "--stdio"),),
+         (("typescript-language-server", "--stdio"), ("tsgo", "--lsp", "--stdio")),
          ("tsconfig.json", "jsconfig.json", "package.json", ".git")),
     Spec("gopls", (".go",), (("gopls",),), ("go.mod", ".git")),
     Spec("clangd", (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"), (("clangd",),),
@@ -121,6 +121,11 @@ def _venv_bin(root: Path) -> list[Path]:
 
 def find_command(spec: Spec, root: Path) -> list[str] | None:
     """The server command for this project: its own install first, then PATH."""
+    if spec.name == "typescript":  # TypeScript 7 is native and serves LSP itself; the wrapper rejects it
+        for r in _roots(root):
+            tsc = shutil.which("tsc", path=str(r / "node_modules" / ".bin")) if (r / "node_modules" / ".bin").is_dir() else None
+            if tsc and _major(r / "node_modules" / "typescript" / "package.json") >= 7:
+                return [tsc, "--lsp", "--stdio"]
     local = [*_venv_bin(root), *(r / "node_modules" / ".bin" for r in _roots(root))]
     for cmd in spec.commands:
         for folder in local:
@@ -132,6 +137,13 @@ def find_command(spec: Spec, root: Path) -> list[str] | None:
         if hit:
             return [hit, *cmd[1:]]
     return None
+
+
+def _major(package_json: Path) -> int:
+    try:
+        return int(str(json.loads(package_json.read_text()).get("version", "0")).split(".")[0])
+    except (OSError, ValueError, AttributeError):
+        return 0
 
 
 def python_for(root: Path) -> str | None:
@@ -160,6 +172,7 @@ class Server:
         self.dead = False
         self.timeouts = 0  # reports missed in a row
         self.answered = False  # it has sent at least one report: no longer starting
+        self.pull = False      # it answers textDocument/diagnostic requests (TypeScript 7 does only that)
         self._lock = threading.Lock()   # one document sync at a time
         self._write = threading.Lock()
         self._cond = threading.Condition()
@@ -275,12 +288,15 @@ class Server:
             "processId": os.getpid(), "rootUri": folder["uri"], "rootPath": str(self.root),
             "workspaceFolders": [folder],
             "capabilities": {
-                "textDocument": {"publishDiagnostics": {"versionSupport": True}, "synchronization": {}},
+                "textDocument": {"publishDiagnostics": {"versionSupport": True}, "synchronization": {},
+                                 "diagnostic": {"dynamicRegistration": False}},
                 "workspace": {"configuration": True, "workspaceFolders": True},
             },
         }, timeout)
         if not reply or "result" not in reply:
             return False
+        caps = (reply.get("result") or {}).get("capabilities") or {}
+        self.pull = bool(caps.get("diagnosticProvider"))
         try:
             self.notify("initialized", {})
             self.notify("workspace/didChangeConfiguration", {"settings": {}})
@@ -325,10 +341,17 @@ class Server:
             except (OSError, ValueError):
                 self.dead = True
                 return None
-            diags = self._wait(key, before, version, timeout)
+            diags = self._pull(path, timeout) if self.pull else self._wait(key, before, version, timeout)
             self.timeouts = 0 if diags is not None else self.timeouts + 1
             self.answered = self.answered or diags is not None
             return diags
+
+    def _pull(self, path: Path, timeout: float) -> list | None:
+        reply = self.request("textDocument/diagnostic", {"textDocument": {"uri": path.as_uri()}}, timeout)
+        result = (reply or {}).get("result")
+        if not isinstance(result, dict):
+            return None
+        return list(result.get("items") or [])
 
     def close_doc(self, path: Path) -> None:
         """Forget the text Vesper sent. An open document overrides the disk for the server, and

@@ -132,3 +132,26 @@ def test_a_loose_file_never_roots_at_home(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     spec = diagnostics.spec_for(Path("x.py"))
     assert diagnostics.project_root(tmp_path / "loose" / "x.py", spec) == tmp_path / "loose"
+
+
+def test_a_server_that_only_answers_requests(lsp, monkeypatch, tmp_path):
+    monkeypatch.setenv("FAKE_LSP_MODE", "pull")
+    (tmp_path / "u.py").write_text("old = ERROR\nok = 1\n")
+    out = lsp.edit_file("u.py", "ok = 1", "ok = ERROR")
+    assert "1 new error" in out and "2:6 error: ok = ERROR" in out and "old = ERROR" not in out
+
+
+def test_typescript_7_serves_itself(tmp_path):
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True)
+    tsc = bin_dir / ("tsc.cmd" if sys.platform == "win32" else "tsc")
+    tsc.write_text("")
+    tsc.chmod(0o755)
+    (tmp_path / "node_modules" / "typescript").mkdir()
+    (tmp_path / "node_modules" / "typescript" / "package.json").write_text('{"version": "7.0.2"}')
+    spec = diagnostics.spec_for(Path("a.ts"))
+    cmd = diagnostics.find_command(spec, tmp_path)
+    assert cmd and cmd[1:] == ["--lsp", "--stdio"]
+    (tmp_path / "node_modules" / "typescript" / "package.json").write_text('{"version": "5.6.0"}')
+    cmd = diagnostics.find_command(spec, tmp_path)
+    assert not cmd or cmd[1:] != ["--lsp", "--stdio"]
