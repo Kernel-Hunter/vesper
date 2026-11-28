@@ -59,8 +59,8 @@ jobs:
       - run: npm --prefix apps/desktop ci
       - run: npm --prefix apps/desktop run build
 
-  # Runs the one-line installers the way users do. They install the latest release, so this
-  # checks the scripts themselves on each OS, not the code in this commit.
+  # Runs the one-line installers the way users do, desktop app included. They install the
+  # latest release, so this checks the scripts themselves on each OS, not the code in this commit.
   install:
     if: github.event_name == 'push'
     strategy:
@@ -73,12 +73,13 @@ jobs:
       - name: install.sh
         if: runner.os != 'Windows'
         run: |
-          bash install.sh
+          bash install.sh --app
           ~/.local/bin/vesper --version
       - name: install.ps1 (through iex, like the README)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          $env:VESPER_APP = '1'
           Get-Content -Raw install.ps1 | Invoke-Expression
           & "$env:USERPROFILE\.local\bin\vesper.exe" --version
           if ($LASTEXITCODE -ne 0) { throw 'vesper did not run' }

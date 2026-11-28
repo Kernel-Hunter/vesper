@@ -21,8 +21,29 @@ $wantApp = $env:VESPER_APP -in @('1', 'only', 'true', 'yes')
 $wantCli = $env:VESPER_APP -ne 'only'
 function Say($text) { Write-Host "==> $text" -ForegroundColor Magenta }
 
+# Download a large file. With curl.exe (Windows 10 1803 and later), a transfer slower than
+# 10 KB/s for a minute is dropped and resumed from where it stopped; either way a failed
+# download is tried five times before giving up, so a stalled connection never hangs here.
+function Get-File($url, $out) {
+  if (Test-Path $out) { Remove-Item $out -Force }
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
+  for ($try = 1; $try -le 5; $try++) {
+    if ($curl) {
+      $ErrorActionPreference = 'Continue'
+      & $curl -fsSL --connect-timeout 20 --speed-limit 10240 --speed-time 60 -C - -o $out $url 2>$null
+      $ok = $LASTEXITCODE -eq 0
+      $ErrorActionPreference = 'Stop'
+    } else {
+      try { Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 120; $ok = $true } catch { $ok = $false }
+    }
+    if ($ok) { return }
+    if ($try -lt 5) { Say "The download stalled; trying again ($($try + 1) of 5)..."; Start-Sleep -Seconds 3 }
+  }
+  throw 'The download kept stalling. Check your connection and run this again.'
+}
+
 function Get-Release {
-  Invoke-WebRequest -Uri $api -UseBasicParsing -Headers @{ Accept = 'application/vnd.github+json' } |
+  Invoke-WebRequest -Uri $api -UseBasicParsing -TimeoutSec 60 -Headers @{ Accept = 'application/vnd.github+json' } |
     Select-Object -ExpandProperty Content | ConvertFrom-Json
 }
 
@@ -61,12 +82,12 @@ function Install-App {
 
   $setup = Join-Path $env:TEMP $asset.name
   Write-Host "==> Downloading Vesper $($release.tag_name)..." -ForegroundColor Magenta
-  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $setup -UseBasicParsing
+  Get-File $asset.browser_download_url $setup
 
   # Check the installer against SHA256SUMS.txt from the same release.
   $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
   if (-not $sumsAsset) { Remove-Item $setup -Force; throw 'The release has no SHA256SUMS.txt; refusing to install an unchecked file.' }
-  $sums = (Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing).Content
+  $sums = (Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing -TimeoutSec 60).Content
   if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }
   $line = ($sums -split "`n") | Where-Object { $_ -match ('\s\*?' + [regex]::Escape($asset.name) + '\s*$') } | Select-Object -First 1
   $want = if ($line) { ($line -split '\s+')[0].ToLower() } else { '' }

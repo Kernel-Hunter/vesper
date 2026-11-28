@@ -37,9 +37,28 @@ trap 'rm -rf "${tmp:?}"' EXIT
 
 say() { printf '\033[1;35m==>\033[0m %s\n' "$*"; }
 
+# Small requests (release info, checksums): give up on a dead connection instead of hanging.
+QUICK="--connect-timeout 20 --max-time 60 --retry 3"
+
+# Download a large file. A transfer slower than 10 KB/s for a minute is dropped and resumed
+# from where it stopped, up to five times, so a stalled connection never hangs the install.
+fetch() { # fetch <url> <file>
+  local tries=0
+  rm -f "$2"
+  until curl -fL --progress-bar --connect-timeout 20 --speed-limit 10240 --speed-time 60 -C - "$1" -o "$2"; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 5 ]; then
+      echo "The download kept stalling. Check your connection and run this again." >&2
+      exit 1
+    fi
+    say "The download stalled; picking it up where it stopped (try $((tries + 1)) of 5)…"
+    sleep 3
+  done
+}
+
 # Print the download URL of the latest release asset whose name ends with $1.
 asset_url() {
-  curl -fsSL -H "Accept: application/vnd.github+json" "$API" \
+  curl -fsSL $QUICK -H "Accept: application/vnd.github+json" "$API" \
     | grep -o '"browser_download_url": *"[^"]*"' \
     | sed -E 's/.*"(https:[^"]*)"$/\1/' \
     | grep -E -- "$1\$" \
@@ -50,7 +69,7 @@ asset_url() {
 verify() { # verify <file> <asset name>
   sums="$(asset_url 'SHA256SUMS\.txt')"
   [ -n "$sums" ] || { echo "The release has no SHA256SUMS.txt; refusing to install an unchecked file." >&2; exit 1; }
-  curl -fsSL "$sums" -o "$tmp/SHA256SUMS.txt"
+  curl -fsSL $QUICK "$sums" -o "$tmp/SHA256SUMS.txt"
   want="$(grep -E " \*?$2\$" "$tmp/SHA256SUMS.txt" | head -n 1 | cut -d' ' -f1)"
   if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$1" | cut -d' ' -f1)"
   else got="$(shasum -a 256 "$1" | cut -d' ' -f1)"; fi
@@ -71,7 +90,7 @@ install_app() {
       url="$(asset_url '-mac-arm64\.zip')"
       [ -n "$url" ] || { echo "Could not find the macOS download in the latest release." >&2; exit 1; }
       say "Downloading Vesper for macOS…"
-      curl -fL --progress-bar "$url" -o "$tmp/app.zip"
+      fetch "$url" "$tmp/app.zip"
       verify "$tmp/app.zip" "${url##*/}"
       ditto -x -k "$tmp/app.zip" "$tmp/unpacked"
       [ -d "$tmp/unpacked/$APP.app" ] || { echo "The download did not contain $APP.app." >&2; exit 1; }
@@ -91,14 +110,14 @@ install_app() {
       url="$(asset_url '\.AppImage')"
       [ -n "$url" ] || { echo "Could not find the Linux download in the latest release." >&2; exit 1; }
       say "Downloading Vesper for Linux…"
-      curl -fL --progress-bar "$url" -o "$tmp/Vesper.AppImage"
+      fetch "$url" "$tmp/Vesper.AppImage"
       verify "$tmp/Vesper.AppImage" "${url##*/}"
       dest="$HOME/.local/share/vesper"
       mkdir -p "$dest" "$HOME/.local/bin" "$HOME/.local/share/applications"
       rm -f "${dest:?}/Vesper.AppImage"
       mv "$tmp/Vesper.AppImage" "$dest/Vesper.AppImage"
       chmod +x "$dest/Vesper.AppImage"
-      curl -fsSL "$ICON_URL" -o "$dest/icon.png" || true
+      curl -fsSL $QUICK "$ICON_URL" -o "$dest/icon.png" || true
       ln -sf "$dest/Vesper.AppImage" "$HOME/.local/bin/vesper-app"
       cat > "$HOME/.local/share/applications/vesper.desktop" <<EOF
 [Desktop Entry]
@@ -122,7 +141,7 @@ EOF
 
 # Latest release tag, or "main" when there is no release yet.
 latest_tag() {
-  curl -fsSL -H "Accept: application/vnd.github+json" "$API" 2>/dev/null \
+  curl -fsSL $QUICK -H "Accept: application/vnd.github+json" "$API" 2>/dev/null \
     | grep -o '"tag_name": *"[^"]*"' | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/' || true
 }
 
@@ -133,7 +152,7 @@ install_cli() {
   done
   if [ -z "$uv_bin" ]; then
     say "Installing uv (Python package manager from Astral)…"
-    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
+    curl -LsSf --connect-timeout 20 --max-time 300 --retry 3 https://astral.sh/uv/install.sh | sh >/dev/null
     uv_bin="$HOME/.local/bin/uv"
     [ -x "$uv_bin" ] || uv_bin="$HOME/.cargo/bin/uv"
     [ -x "$uv_bin" ] || { echo "uv did not install. See https://docs.astral.sh/uv/ and run this again." >&2; exit 1; }
