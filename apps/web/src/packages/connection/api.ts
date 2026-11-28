@@ -168,6 +168,7 @@ export interface Usage {
 }
 
 export interface ChangedFile { path: string; status: 'added' | 'modified' | 'deleted'; add: number; del: number; diff: string; binary: boolean }
+export interface Checkpoint { turn: string; text: string; time: number; files: Omit<ChangedFile, 'diff' | 'binary'>[] }
 export interface CheckState { folder: string; command: string; suggestion: string }
 /** The Git section of the Environment panel. `lost` is [uncommitted files, unmerged commits]. */
 export interface GitState {
@@ -309,6 +310,10 @@ export const api = {
   /** Every file a chat changed, with a diff against what it held before (the review pane). */
   changes: async (chatId: string, sessionId?: string): Promise<ChangedFile[]> =>
     ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/changes${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`)).json()) as { files: ChangedFile[] }).files,
+  checkpoints: async (chatId: string, sessionId?: string): Promise<Checkpoint[]> =>
+    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/checkpoints${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`)).json()) as { checkpoints: Checkpoint[] }).checkpoints,
+  restoreCheckpoint: async (chatId: string, turn: string, sessionId?: string): Promise<string[]> =>
+    ((await (await request(`/api/chats/${encodeURIComponent(chatId)}/checkpoints/restore`, { method: 'POST', json: { turn, session_id: sessionId } })).json()) as { restored: string[] }).restored,
   revertFile: async (chatId: string, path: string, sessionId?: string): Promise<void> => {
     await request(`/api/chats/${encodeURIComponent(chatId)}/changes/revert`, { method: 'POST', json: { path, session_id: sessionId } })
   },

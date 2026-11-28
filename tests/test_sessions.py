@@ -582,6 +582,48 @@ def test_rewind_forgets_a_message_and_what_followed_and_can_put_files_back(proj,
     assert (proj / "a.txt").read_text() == "first edit\n"
 
 
+def test_checkpoints_list_each_turn_and_restore_keeps_the_conversation(proj, store):
+    ws = Workspace(proj, mode="yolo")
+    s = Session(fake(
+        call("write_file", path="a.txt", content="one\ntwo\n"), AIMessage("did one"),
+        call("write_file", path="new.txt", content="made\n"), AIMessage("did two"),
+        call("edit_file", path="a.txt", old_string="two", new_string="TWO"), AIMessage("did three"),
+        AIMessage("talked"), AIMessage("ok"),
+    ), ws, store)
+    list(s.ask("change a"))
+    list(s.ask("add a file"))
+    list(s.ask("shout"))
+    list(s.ask("just talk"))
+    entries = s.checkpoints()
+    assert [e["text"] for e in entries] == ["shout", "add a file", "change a"]  # newest first, talk-only turns left out
+    assert entries[0]["files"] == [{"path": str(proj / "a.txt"), "status": "modified", "add": 1, "del": 1}]
+    assert entries[1]["files"][0]["status"] == "added" and entries[1]["files"][0]["add"] == 1
+    assert entries[2]["files"][0] == {"path": str(proj / "a.txt"), "status": "modified", "add": 2, "del": 1}
+    with pytest.raises(ValueError):
+        s.restore_checkpoint("vesper-turn-x")
+    restored = s.restore_checkpoint(entries[1]["turn"])  # back to before "add a file"
+    assert sorted(Path(p).name for p in restored) == ["a.txt", "new.txt"]
+    assert (proj / "a.txt").read_text() == "one\ntwo\n" and not (proj / "new.txt").exists()
+    assert len(s.user_turns()) == 4  # the conversation stays
+    assert [e["text"] for e in s.checkpoints()] == ["change a"]
+    list(s.ask("next"))
+    told = [m for m in s.history if m.type == "human"][-1].content
+    assert "new.txt" in str(told)  # the model hears the files went back
+
+
+def test_checkpoint_endpoints(proj, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from vesper import server
+
+    engine = server.Engine()
+    engine.settings["workspace"] = str(proj)
+    client = TestClient(server.create_app("t", engine=engine), headers={"X-Token": "t", "Host": "127.0.0.1"})
+    assert client.get("/api/chats/c1/checkpoints").json() == {"checkpoints": []}
+    assert client.post("/api/chats/c1/checkpoints/restore", json={}).status_code == 400
+    assert client.post("/api/chats/c1/checkpoints/restore", json={"turn": "vesper-turn-5"}).status_code == 400
+
+
 def test_rewind_endpoint_validates_and_refuses_a_busy_chat(proj):
     from fastapi.testclient import TestClient
 
@@ -612,6 +654,26 @@ def test_terminal_rewind_puts_the_message_back_in_the_prompt(proj, store, monkey
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     app.rewind("9")  # out of range: nothing happens
     assert [m.content for m in s.history if m.type == "human"] == ["first thing"]
+
+
+def test_terminal_checkpoints_list_and_restore(proj, store, monkeypatch, capsys):
+    from vesper import tui
+
+    s = Session(fake(call("write_file", path="b.txt", content="b\n"), AIMessage("made b")),
+                Workspace(proj, mode="yolo"), store)
+    list(s.ask("make b"))
+    app = tui.App.__new__(tui.App)
+    app.session, app.workspace = s, s.workspace
+    app.wait_idle = lambda: None
+    app.checkpoints("")
+    shown = capsys.readouterr().out
+    assert "make b" in shown and "b.txt" in shown
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    app.checkpoints("1")
+    assert (proj / "b.txt").exists()  # said no
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    app.checkpoints("1")
+    assert not (proj / "b.txt").exists() and len(s.user_turns()) == 1
 
 
 def test_rewind_by_turn_id_names_the_exact_message(proj, store):

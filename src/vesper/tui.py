@@ -122,6 +122,7 @@ SLASH = {
     "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
+    "/checkpoints": "files at each of your messages; /checkpoints N puts them back as they were then",
     "/export": "save this conversation as Markdown or HTML (/export html [path])",
     "/memory": "notes Vesper keeps between conversations (/memory forget N removes one)",
     "/hooks": "your commands that run before or after the agent's steps (/hooks approve trusts this project's)",
@@ -139,7 +140,7 @@ SLASH = {
 ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/delete": "/sessions rm", "/log": "/logs",
            "/allow": "/permissions", "/thinking": "/think"}
 HELP_GROUPS = [
-    ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/export", "/logs"]),
+    ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/checkpoints", "/compact", "/transcript", "/export", "/logs"]),
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
     ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/hooks", "/memory", "/git", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
@@ -863,6 +864,52 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def checkpoints(self, arg: str = "") -> None:
+        """/checkpoints [N]: the turns that changed files; N puts the files back to before that turn."""
+        import datetime as dt
+
+        self.wait_idle()
+        entries = self.session.checkpoints()
+        if not entries:
+            note("No checkpoints yet: Vesper has not changed any files in this conversation.")
+            return
+        if not arg.strip():
+            console.print(Text("Checkpoints, newest first. Files as they were before each message:", style="bold"))
+            for n, e in enumerate(entries, start=1):
+                first = (e["text"].splitlines() or ["(an earlier message)"])[0]
+                when = dt.datetime.fromtimestamp(e["time"] / 1000).strftime("%H:%M") if e["time"] > 10**11 else ""
+                console.print(Text.assemble((f"  {n:>2}  ", ACCENT), (f"{when}  " if when else "", FAINT),
+                                            (first[:80] + ("…" if len(first) > 80 else ""), "")))
+                for f in e["files"][:6]:
+                    sign = {"added": "A", "deleted": "D"}.get(f["status"], "M")
+                    console.print(Text.assemble(("        " + sign + " ", MUTED), (self.workspace.rel(Path(f["path"])), ""),
+                                                (f"  +{f['add']}", OK), (f" −{f['del']}", ERR)))
+                if len(e["files"]) > 6:
+                    console.print(Text(f"        and {len(e['files']) - 6} more", style=FAINT))
+            note("/checkpoints N puts the files back as they were before message N; the conversation stays. "
+                 "/rewind also takes the conversation back.")
+            return
+        if not arg.strip().isdigit() or not 1 <= int(arg) <= len(entries):
+            note(f"Give a number from 1 to {len(entries)}.", WARN)
+            return
+        entry = entries[int(arg) - 1]
+        count = len({f["path"] for e in entries[:int(arg)] for f in e["files"]})
+        try:
+            sure = input(f"  Put {count} file{'s' if count != 1 else ''} back as they were before that message? [y/N] ")
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            return
+        if sure.strip().lower() not in ("y", "yes"):
+            return
+        try:
+            paths = self.session.restore_checkpoint(entry["turn"])
+        except (ValueError, OSError) as exc:
+            note(f"Could not put the files back: {exc}", ERR)
+            return
+        for path in paths:
+            console.print(Text.assemble(("  ↩ ", ACCENT_2), (self.workspace.rel(Path(path)), "")))
+        note("Files are back. Vesper will be told before your next message.")
+
     def export(self, arg: str) -> None:
         """/export [md|html] [path]: write this conversation to a file (default: here, Markdown)."""
         from vesper import export
@@ -1422,6 +1469,8 @@ class App:
             self.memory(arg)
         elif cmd == "/export":
             self.export(arg)
+        elif cmd in ("/checkpoints", "/timeline"):
+            self.checkpoints(arg)
         elif cmd == "/small":
             self.small(arg)
         elif cmd == "/fallback":

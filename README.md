@@ -120,6 +120,7 @@ command line and all tool output, where the normal view prints one summary line 
 | `/undo` | put files back to how they were before Vesper's last changes |
 | `/git` | the git safety net: `/git auto on` commits each turn's changes; `/git worktree` gives this chat its own copy |
 | `/rewind` | go back to before one of your messages to change it; can also put files back |
+| `/checkpoints` | the files each of your messages changed; `/checkpoints N` puts them back as they were before it |
 | `/compact` | replace the older part of the conversation with a summary to free context |
 | `/mcp` | MCP servers, their status and tools; `/mcp approve`, `/mcp restart` |
 | `/permissions` | list the commands and web sites that run without asking; remove one |
@@ -173,6 +174,13 @@ the desktop app the same actions are in the Environment panel under Git.
 it and everything after it, then puts its text back in the prompt so you can change it and
 send it again. It asks whether to also put back the files changed since then (this works
 for the last 20 messages).
+
+`/checkpoints` shows the same history from the files' side: each of your messages that led
+to changes, newest first, with the files it touched and lines added and removed.
+`/checkpoints N` puts every file back as it was before message N and keeps the
+conversation, so you can try another way without retyping anything; Vesper is told before
+your next message. In the desktop app it is the Timeline tab of Review changes, with a
+"Restore to before this" button on each message.
 
 ### Tests and lint after every edit
 

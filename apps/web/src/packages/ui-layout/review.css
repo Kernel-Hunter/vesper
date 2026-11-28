@@ -73,3 +73,17 @@
   .review-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .review-files { max-height: 140px; border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+/* Tabs in the header and the checkpoint timeline. */
+.review-tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.review-tabs button { padding: 3px 10px; border: 0; border-radius: calc(var(--r-sm) - 2px); background: transparent; color: var(--text-3); font: inherit; font-size: 12.5px; cursor: pointer; }
+.review-tabs button[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+.timeline { flex: 1; overflow: auto; list-style: none; margin: 0; padding: 14px 18px 28px 34px; }
+.tl-item { position: relative; padding: 10px 0 14px 18px; border-left: 1px solid var(--line-2); }
+.tl-item::before { content: ""; position: absolute; left: -5px; top: 17px; width: 9px; height: 9px; border-radius: 50%; background: var(--bg); border: 2px solid var(--accent); }
+.tl-item:last-child { border-left-color: transparent; }
+.tl-head { display: flex; align-items: center; gap: 12px; min-height: 28px; }
+.tl-time { flex: none; color: var(--text-3); font: 12px var(--mono); }
+.tl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13.5px; }
+.tl-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.tl-files li { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; color: var(--text-2); font-size: 12.5px; }

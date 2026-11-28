@@ -1,10 +1,63 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type ChangedFile } from '../connection/api'
+import { api, type ChangedFile, type Checkpoint } from '../connection/api'
 import { currentBusy, currentChat, setDraft, toast, useStore } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
 import { diffRows } from '../ui-conversation/diffStats'
 
 const baseName = (path: string): string => path.split(/[\\/]/).pop() || path
+const clock = (ms: number): string => (ms > 1e11 ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+
+/** The turns that changed files, newest first, each with a way back to before it. */
+function Timeline({ chatId, sessionId, busy, onRestored }: {
+  chatId: string; sessionId?: string; busy: boolean; onRestored: () => void
+}) {
+  const [items, setItems] = useState<Checkpoint[] | null>(null)
+  const [error, setError] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const load = useCallback((): void => {
+    api.checkpoints(chatId, sessionId).then(list => { setItems(list); setError('') },
+      e => { setItems([]); setError(e instanceof Error ? e.message : 'Could not load the checkpoints.') })
+  }, [chatId, sessionId])
+  useEffect(() => { if (!busy) load() }, [busy, load])
+  const restore = async (turn: string): Promise<void> => {
+    setConfirm('')
+    try {
+      const paths = await api.restoreCheckpoint(chatId, turn, sessionId)
+      toast(`Put back ${paths.length} ${paths.length === 1 ? 'file' : 'files'}`)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not put the files back.', 'error')
+    }
+    load()
+    onRestored()
+  }
+  if (items === null) return <div className="review-empty">Loading…</div>
+  if (!items.length) return <div className="review-empty">{error || 'No checkpoints yet: this conversation has not changed any files.'}</div>
+  return <ol className="timeline">
+    {items.map((c, i) => {
+      const later = new Set(items.slice(0, i + 1).flatMap(x => x.files.map(f => f.path))).size
+      return <li key={c.turn} className="tl-item">
+        <div className="tl-head">
+          <span className="tl-time">{clock(c.time)}</span>
+          <span className="tl-text" title={c.text}>{c.text.split('\n')[0] || 'An earlier message'}</span>
+          {confirm === c.turn ? <span className="review-confirm">Put {later} {later === 1 ? 'file' : 'files'} back as before this message?
+            <button type="button" onClick={() => void restore(c.turn)}>Yes</button>
+            <button type="button" onClick={() => setConfirm('')}>No</button>
+          </span> : <button type="button" className="review-revert" disabled={busy} onClick={() => setConfirm(c.turn)}
+            title={busy ? 'Wait for Vesper to finish' : 'Put every file back as it was before this message; the conversation stays'}>
+            <Icon name="undo" size={14} />Restore to before this
+          </button>}
+        </div>
+        <ul className="tl-files">
+          {c.files.map(f => <li key={f.path} title={f.path}>
+            <span className={`review-status ${f.status}`}>{f.status === 'added' ? 'A' : f.status === 'deleted' ? 'D' : 'M'}</span>
+            <span className="review-name">{baseName(f.path)}</span>
+            <small><span className="stat-add">+{f.add}</span> <span className="stat-del">−{f.del}</span></small>
+          </li>)}
+        </ul>
+      </li>
+    })}
+  </ol>
+}
 
 /** Every file the current chat changed, compared with what it held before the chat touched it. */
 export function Review({ onClose }: { onClose: () => void }) {
@@ -15,6 +68,7 @@ export function Review({ onClose }: { onClose: () => void }) {
   const [comment, setComment] = useState<{ row: number; text: string } | null>(null)
   const [confirm, setConfirm] = useState(false)
   const [error, setError] = useState('')
+  const [view, setView] = useState<'files' | 'timeline'>('files')
   const chatId = chat?.id
   const folder = useStore(s => currentChat(s)?.cwd ?? s.server?.settings.workspace ?? '')
   const sessionId = chat?.sessionId
@@ -67,14 +121,20 @@ export function Review({ onClose }: { onClose: () => void }) {
       <section className="review" role="dialog" aria-modal="true" aria-label="Review changes">
         <header className="review-head">
           <strong>Review changes</strong>
-          {files && files.length > 0 && <span className="review-stat">
+          <span className="review-tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={view === 'files'} onClick={() => setView('files')}>Files</button>
+            <button type="button" role="tab" aria-selected={view === 'timeline'} onClick={() => setView('timeline')}>Timeline</button>
+          </span>
+          {view === 'files' && files && files.length > 0 && <span className="review-stat">
             {files.length} {files.length === 1 ? 'file' : 'files'} · <span className="stat-add">+{totals.add}</span> <span className="stat-del">−{totals.del}</span>
           </span>}
           <span className="review-spacer" />
           <button type="button" className="icon-btn sm" onClick={load} aria-label="Refresh" title="Refresh"><Icon name="retry" size={15} /></button>
           <button type="button" className="icon-btn sm" onClick={onClose} aria-label="Close review"><Icon name="close" size={15} /></button>
         </header>
-        {files === null ? <div className="review-empty">Loading…</div>
+        {view === 'timeline' ? (chatId ? <Timeline chatId={chatId} sessionId={sessionId} busy={busy} onRestored={load} />
+          : <div className="review-empty">No checkpoints yet.</div>)
+          : files === null ? <div className="review-empty">Loading…</div>
           : !files.length ? <div className="review-empty">{error || 'This conversation has not changed any files yet.'}</div>
           : <div className="review-body">
             <ul className="review-files">

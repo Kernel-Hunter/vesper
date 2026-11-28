@@ -768,6 +768,23 @@ class Engine:
         finally:
             entry["lock"].release()
 
+    def chat_checkpoints(self, chat_id: str, session_id: str | None = None) -> list[dict]:
+        """The turns that changed files (the checkpoint timeline). Read-only."""
+        with self._sessions_lock:
+            entry = self._folder_session(chat_id, [], session_id)
+        return entry["session"].checkpoints()
+
+    def restore_chat_checkpoint(self, chat_id: str, turn: str, session_id: str | None = None) -> list[str]:
+        entry, session = self._idle_session(chat_id, session_id)
+        try:
+            return session.restore_checkpoint(turn)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"Could not put the files back: {exc}") from exc
+        finally:
+            entry["lock"].release()
+
     def compact_chat(self, chat_id: str, session_id: str | None = None) -> dict:
         """Summarize the older turns of a chat to free context."""
         entry, session = self._idle_session(chat_id, session_id)
@@ -1033,6 +1050,26 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
         if not await run_in_threadpool(engine.revert_chat_file, chat_id, path, session_id):
             raise HTTPException(404, "Vesper has no copy of that file from this conversation.")
         return {"ok": True}
+
+    @app.get("/api/chats/{chat_id}/checkpoints", dependencies=[Depends(auth)])
+    def chat_checkpoints(chat_id: str, session_id: str = ""):
+        if not CHAT_ID.match(chat_id) or (session_id and not SESSION_ID.match(session_id)):
+            raise HTTPException(400, "Bad chat or session id.")
+        if not engine.settings["workspace"]:
+            return {"checkpoints": []}
+        return {"checkpoints": engine.chat_checkpoints(chat_id, session_id or None)}
+
+    @app.post("/api/chats/{chat_id}/checkpoints/restore", dependencies=[Depends(auth)])
+    async def restore_checkpoint(request: Request, chat_id: str):
+        body = await json_body(request)
+        session_id = body.get("session_id") if isinstance(body, dict) else None
+        turn = body.get("turn") if isinstance(body, dict) else None
+        if not CHAT_ID.match(chat_id) or (session_id is not None and not (isinstance(session_id, str) and SESSION_ID.match(session_id))):
+            raise HTTPException(400, "Bad chat or session id.")
+        if not isinstance(turn, str) or not turn:
+            raise HTTPException(400, "Send the turn to go back to.")
+        paths = await run_in_threadpool(engine.restore_chat_checkpoint, chat_id, turn, session_id)
+        return {"restored": paths}
 
     @app.post("/api/chats/{chat_id}/compact", dependencies=[Depends(auth)])
     async def compact(request: Request, chat_id: str):

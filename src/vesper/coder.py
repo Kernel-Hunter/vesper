@@ -1069,30 +1069,100 @@ class Session:
         turn_id = str(msg.id or "")
         files_known = turn_id.startswith(TURN_ID_PREFIX)
         if files and files_known:
-            turn = int(turn_id.removeprefix(TURN_ID_PREFIX))
-            rows = [r for r in self._copies if r[0] >= turn]
-            if self.store is not None and self._saved:
-                rows = self.store.checkpoints_since(self.id, turn)
-            first: dict[str, bytes | None] = {}
-            for _, path, before in sorted(rows, key=lambda r: r[0]):
-                first.setdefault(path, before)  # the oldest copy is how the file was before that message
-            for path, before in first.items():
-                target = Path(path)
-                if before is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(before)
-                restored.append(path)
-            self._copies = [r for r in self._copies if r[0] < turn]
-            if self.store is not None and self._saved:
-                self.store.delete_checkpoints_since(self.id, turn)
-            self.workspace._seen.clear()
+            restored = self._restore_since(int(turn_id.removeprefix(TURN_ID_PREFIX)))
         self.history = self.history[:i]
         self._undone = []
         self._save()
         self._log("rewind", detail={"text": text[:200], "restored": restored})
         return {"text": text, "restored": restored, "files_known": files_known}
+
+    def _checkpoint_rows(self) -> list[tuple[int, str, bytes | None]]:
+        if self.store is not None and self._saved:
+            return self.store.checkpoints_since(self.id, 0)
+        return list(self._copies)
+
+    def _restore_since(self, turn: int) -> list[str]:
+        """Put every file changed from user turn `turn` on back as it was before it. Returns the paths."""
+        first: dict[str, bytes | None] = {}
+        for _, path, before in sorted((r for r in self._checkpoint_rows() if r[0] >= turn), key=lambda r: r[0]):
+            first.setdefault(path, before)  # the oldest copy is how the file was before that message
+        for path, before in first.items():
+            target = Path(path)
+            if before is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(before)
+        self._copies = [r for r in self._copies if r[0] < turn]
+        if self.store is not None and self._saved:
+            self.store.delete_checkpoints_since(self.id, turn)
+        self.workspace._seen.clear()
+        return list(first)
+
+    def checkpoints(self) -> list[dict]:
+        """The turns that changed files, newest first: the checkpoint timeline.
+
+        [{"turn": "vesper-turn-N", "text": the user's message, "time": ms, "files": [{"path", "status", "add", "del"}]}]
+        Copies kept during a check round count for the user's message before them. A file's
+        state after a turn is the copy a later turn kept of it, or the file on disk now.
+        """
+        import bisect
+        import difflib
+
+        rows = sorted(self._checkpoint_rows(), key=lambda r: r[0])
+        texts = {int(str(m.id).removeprefix(TURN_ID_PREFIX)): user_text(m) for m in self.history
+                 if isinstance(m, HumanMessage) and str(m.id or "").removeprefix(TURN_ID_PREFIX).isdigit()
+                 and str(m.id).startswith(TURN_ID_PREFIX)}
+        starts = sorted(texts)
+        by_turn: dict[int, dict[str, bytes | None]] = {}
+        for turn, path, before in rows:
+            i = bisect.bisect_right(starts, turn)
+            owner = starts[i - 1] if i else turn
+            by_turn.setdefault(owner, {}).setdefault(path, before)  # the oldest copy within the turn
+        out = []
+        for turn in sorted(by_turn, reverse=True):
+            files = []
+            ends = [s for s in starts if s > turn]
+            nxt = ends[0] if ends else None
+            for path, before in by_turn[turn].items():
+                later = next((b for t, p, b in rows if nxt is not None and t >= nxt and p == path), ...)
+                if later is ...:
+                    try:
+                        after = Path(path).read_bytes() if Path(path).is_file() else None
+                    except OSError:
+                        after = None
+                else:
+                    after = later
+                status = "added" if before is None else "deleted" if after is None else "modified"
+                add = rem = 0
+                try:
+                    old, new = (before or b"").decode("utf-8"), (after or b"").decode("utf-8")
+                    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=0):
+                        if line.startswith("+") and not line.startswith("+++"):
+                            add += 1
+                        elif line.startswith("-") and not line.startswith("---"):
+                            rem += 1
+                except UnicodeDecodeError:
+                    pass
+                files.append({"path": path, "status": status, "add": add, "del": rem})
+            out.append({"turn": f"{TURN_ID_PREFIX}{turn}", "text": texts.get(turn, ""), "time": turn, "files": files})
+        return out
+
+    def restore_checkpoint(self, turn_id: str) -> list[str]:
+        """Put files back as they were before one of the user's messages, keeping the conversation.
+
+        The model is told with the next message. Raises ValueError for an unknown turn.
+        """
+        if not str(turn_id).startswith(TURN_ID_PREFIX) or not turn_id.removeprefix(TURN_ID_PREFIX).isdigit():
+            raise ValueError("That is not a checkpoint of this conversation.")
+        turn = int(turn_id.removeprefix(TURN_ID_PREFIX))
+        if not any(r[0] >= turn for r in self._checkpoint_rows()):
+            raise ValueError("Nothing changed since that message, so there is nothing to put back.")
+        paths = self._restore_since(turn)
+        self._undone += paths
+        self._commits = [c for c in self._commits if c["turn"] < turn]
+        self._log("undo", detail={"paths": paths, "checkpoint": turn_id})
+        return paths
 
     def drop_last_turn(self) -> str | None:
         """Forget the last question and everything after it (to ask it again). Returns its text."""
