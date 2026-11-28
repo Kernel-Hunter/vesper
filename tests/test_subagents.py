@@ -105,3 +105,14 @@ def test_the_agent_is_told_how_to_use_helpers(tmp_path):
     assert "subagent" in agent_system_prompt(tmp_path)
     tool = subagents.make_tool(None)
     assert tool.name == "subagent" and len(tool.description) < 200
+
+
+def test_a_helper_never_waits_for_an_approval(tmp_path):
+    s, _ = _session(tmp_path)
+    s.workspace.mode = "ask"
+    asked = []
+    s.workspace.approve = lambda action: asked.append(action) or "yes"
+    child = subagents._helper_workspace(s.workspace)
+    web = next(t for t in child.tools() if t.name == "web_fetch")
+    out = web.invoke({"url": "https://example.com/page"})
+    assert out.startswith("Error:") and "put the address in your answer" in out and asked == []

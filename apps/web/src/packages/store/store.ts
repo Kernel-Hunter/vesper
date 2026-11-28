@@ -565,8 +565,11 @@ export async function send(text: string, opts: { retry?: boolean; chatId?: strin
             () => ({ output: e.data.output, ok: e.data.ok, ms: e.data.ms ?? undefined, live: undefined }))
           break
         case 'output':
-          patchTool(t => (t.name === 'run_command' || t.name === 'run_check') && t.output === undefined,
-            t => ({ live: ((t.live ?? '') + e.data.line + '\n').slice(-MAX_TOOL_OUTPUT) }))
+          { // "helper 2: grep foo" is a helper's step; anything else is a running command's output
+            const helper = e.data.line.startsWith('helper ')
+            patchTool(t => (helper ? t.name === 'subagent' : t.name === 'run_command' || t.name === 'run_check') && t.output === undefined,
+              t => ({ live: ((t.live ?? '') + e.data.line + '\n').slice(-MAX_TOOL_OUTPUT) }))
+          }
           break
         case 'auto':
           if (e.data.diff) patchTool(t => t.name === e.data.tool && t.output === undefined, () => ({ diff: e.data.diff }))

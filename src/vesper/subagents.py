@@ -6,9 +6,10 @@ model, works until it can answer, and only its final reply goes back to the agen
 search through fifty files then costs the agent a few hundred words of findings instead of
 the files themselves, and several helpers can run at the same time.
 
-A helper never edits, runs commands or starts helpers of its own. Its web fetches go through
-the same approval as the agent's, one question at a time. Stopping the turn stops every
-helper at its next step. What helpers spend is added to the turn's tokens and cost.
+A helper never edits, runs commands or starts helpers of its own, and never asks the user
+anything: a page fetch that would need approval is refused with a note to report the address,
+so the agent can fetch it itself. Stopping the turn stops every helper at its next step. What
+helpers spend is added to the turn's tokens and cost.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.errors import GraphRecursionError
 
-from vesper.workspace import Workspace
+from vesper.workspace import ToolError, Workspace
 
 if TYPE_CHECKING:
     from vesper.coder import Session
@@ -57,14 +58,14 @@ def _label(name: str, args: dict) -> str:
     return f"{name} {value[:80]}".strip()
 
 
+def _no_asking(action: dict) -> str:
+    # The user sees the agent's steps, not a helper's, so a helper never waits for an answer.
+    raise ToolError("This needs the user's approval, which a helper cannot ask for. Do not retry; "
+                    "put the address in your answer so the agent can fetch it.")
+
+
 def _helper_workspace(parent: Workspace) -> Workspace:
-    ask_lock = threading.Lock()
-
-    def approve(action: dict) -> str:
-        with ask_lock:  # parallel helpers ask one at a time
-            return parent.approve(action)
-
-    return Workspace(parent.root, approve=approve, mode=parent.mode, rules=list(parent.rules),
+    return Workspace(parent.root, approve=_no_asking, mode=parent.mode, rules=list(parent.rules),
                      hosts=list(parent.hosts), always=set(parent.always), parent=parent)
 
 
