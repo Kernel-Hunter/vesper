@@ -23,6 +23,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Git safety net, part one** (0.25.0): `/git auto on` commits each turn's changes (only Vesper's files, the user's identity and hooks, never during a merge or on a detached HEAD); `/undo` takes the commit back. A conversation deleted in another window stops saving instead of printing errors.
 - **Daylight on dark terminals** (0.25.1): Daylight keeps its exact colors in a dark terminal; only the text and diff backgrounds change so they stay readable. `/theme daylight` fits either kind of window.
 - **Subagents** (0.28.0): a `subagent` tool hands a self-contained question to a helper with a fresh context and read-only tools (files and the web); only its findings come back. Up to four run at once, their steps show live, their tokens count toward the answer, and stopping the answer stops them.
+- **Hooks** (0.29.0): `PreToolUse`, `PostToolUse`, `UserPromptSubmit` and `Stop` commands in `~/.vesper/hooks.json` or a project's `.vesper/hooks.json`, in Claude Code's format with its tool names accepted. Exit code 2 blocks or sends feedback; a project's file runs only once approved with `/hooks approve`, and the agent must ask to write either file. The installers no longer use the GitHub API, which refused them on shared networks.
 - **Helpers never wait** (0.28.1): a helper that would need the user's approval to fetch a page reports the address instead, since its steps have no approval card in the app; helper progress shows under the helper's step in the desktop app.
 - **Diagnostics after edits** (0.27.0): after `write_file` or `edit_file`, the errors the edit introduced come back from the project's language server (basedpyright/pyright, TypeScript 7 or typescript-language-server, gopls, clangd), with errors that were already there left out. Servers already installed only; `/diagnostics` shows and toggles it.
 - **Git safety net, part two** (0.26.0): `/git worktree` gives a chat its own git worktree on a `vesper/` branch, so parallel chats in one repository never edit the same files; `/git merge` brings it back only when that is safe, `/git discard` asks before throwing it away. The desktop app has the same buttons, and shows which commit each answer made.
@@ -49,11 +50,9 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Next, in order
 
-1. **Hooks.** Your own commands that run before or after a tool call (format on save, block a
-    path, notify), configured per project.
-2. **Memory across sessions.** Facts and preferences the agent keeps for a project and reads
+1. **Memory across sessions.** Facts and preferences the agent keeps for a project and reads
     at the start of each conversation.
-3. **ACP server.** Vesper as the agent inside editors that speak the Agent Client Protocol.
+2. **ACP server.** Vesper as the agent inside editors that speak the Agent Client Protocol.
 
 Later: a browser tool, session
 export and sharing, a checkpoint timeline, symbol and URL mentions, keybindings and a vim

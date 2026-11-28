@@ -66,7 +66,7 @@ def _no_asking(action: dict) -> str:
 
 def _helper_workspace(parent: Workspace) -> Workspace:
     return Workspace(parent.root, approve=_no_asking, mode=parent.mode, rules=list(parent.rules),
-                     hosts=list(parent.hosts), always=set(parent.always), parent=parent)
+                     hosts=list(parent.hosts), always=set(parent.always), parent=parent, hooks=parent.hooks)
 
 
 def build(session: Session, child: Workspace):

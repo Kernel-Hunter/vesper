@@ -33,7 +33,7 @@ from pathlib import Path
 
 from langchain.tools import tool
 
-from vesper import diagnostics, permissions
+from vesper import diagnostics, hooks, permissions
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env", "__pycache__", ".mypy_cache",
@@ -141,6 +141,7 @@ class Workspace:
     mcp_servers: list = field(default_factory=list, repr=False)  # MCP servers whose tools the agent gets
     jobs: dict = field(default_factory=dict, repr=False)  # background commands: {number: _Job}
     parent: "Workspace | None" = field(default=None, repr=False)  # a helper's: stopping the parent stops it
+    hooks: object = field(default=None, repr=False)  # hooks.Runner: the user's commands around each step
     _turn: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def __post_init__(self) -> None:
@@ -458,7 +459,7 @@ class Workspace:
         self._gate("edit", {
             "tool": "write_file", "path": self.rel(p), "new": old is None,
             "diff": _diff(self.rel(p), old or "", content),
-        }, strict=self._is_credential_path(p))
+        }, strict=self._is_credential_path(p) or hooks.is_hooks_file(p))
         self._changing(p)
         p.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(p, content)
@@ -499,7 +500,7 @@ class Workspace:
             hits, how = 1, "; matched ignoring indentation"
         check = diagnostics.start(p, text) if self.mode != "plan" else None
         self._gate("edit", {"tool": "edit_file", "path": self.rel(p), "diff": _diff(self.rel(p), text, new_text)},
-                   strict=self._is_credential_path(p))
+                   strict=self._is_credential_path(p) or hooks.is_hooks_file(p))
         self._changing(p)
         _atomic_write(p, new_text)
         n = hits if replace_all else 1
@@ -711,6 +712,11 @@ class Workspace:
                     return REPEATED
                 if name in CHANGES_THINGS:
                     ws._seen.clear()
+                hook_tool, hook_args = ws.hooks.tool_input(fn, args) if ws.hooks is not None else ("", {})
+                if ws.hooks is not None:
+                    blocked = ws.hooks.before_tool(ws.root, hook_tool, hook_args)
+                    if blocked:
+                        return blocked
                 try:
                     result = fn(*args)
                 except ToolError as exc:
@@ -719,6 +725,8 @@ class Workspace:
                     return f"Error: {getattr(exc, 'strerror', None) or exc}"
                 if name in READ_ONLY:
                     ws._seen.add(key)
+                if ws.hooks is not None and isinstance(result, str) and not result.startswith("Error:"):
+                    result += ws.hooks.after_tool(ws.root, hook_tool, hook_args, result)
                 return result
 
         @tool

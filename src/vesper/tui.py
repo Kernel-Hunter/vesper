@@ -122,6 +122,7 @@ SLASH = {
     "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
+    "/hooks": "your commands that run before or after the agent's steps (/hooks approve trusts this project's)",
     "/diagnostics": "type errors from the language server after each edit go back to Vesper (/diagnostics on|off)",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
     "/mcp": "MCP servers and their tools (/mcp approve [name], /mcp restart [name])",
@@ -138,7 +139,7 @@ ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sess
 HELP_GROUPS = [
     ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/logs"]),
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
-    ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/git", "/cd", "/permissions", "/mcp", "/status"]),
+    ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/hooks", "/git", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
     ("Elsewhere", ["/telegram", "/app"]),
 ]
@@ -860,6 +861,27 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def hooks(self, arg: str) -> None:
+        from vesper import hooks
+
+        root = self.workspace.root
+        if arg.strip().lower() == "approve":
+            approved = hooks.approve(root)
+            note(f"Approved the hooks in {approved}. They run from now on; a change to the file needs a new approval."
+                 if approved else "This project has no .vesper/hooks.json.")
+            return
+        _, waiting = hooks.configured(root)
+        found = hooks.all_hooks(root)
+        if not found:
+            note(f"No hooks. Add them to {hooks.user_file()} (yours) or .vesper/hooks.json (this project), "
+                 'in Claude Code\'s format: {"hooks": {"PostToolUse": [{"matcher": "edit_file", '
+                 '"hooks": [{"type": "command", "command": "..."}]}]}}')
+            return
+        rows = [f"{h.scope:<8}{h.event:<17}{(h.matcher or '*')[:24]:<26}{h.command[:70]}" for h in found]
+        note("Hooks:\n  " + "\n  ".join(rows))
+        if waiting:
+            note(f"The project's hooks in {waiting} do not run until you approve them: /hooks approve")
+
     def diagnostics(self, arg: str) -> None:
         from vesper import diagnostics
 
@@ -1347,6 +1369,8 @@ class App:
             self.check(arg)
         elif cmd == "/diagnostics":
             self.diagnostics(arg)
+        elif cmd == "/hooks":
+            self.hooks(arg)
         elif cmd == "/small":
             self.small(arg)
         elif cmd == "/fallback":

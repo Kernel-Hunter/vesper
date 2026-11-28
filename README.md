@@ -188,6 +188,27 @@ again, up to three times. Answers that change no files skip the check. In the de
 the Environment panel has the same setting, with a one-click suggestion. The command is
 saved for the folder in `~/.vesper/config.json`, so a cloned repository cannot set one.
 
+### Hooks
+
+Hooks are your own commands that run around the agent's steps: format a file after every edit,
+refuse writes to a folder, run the tests before the agent may finish. They use Claude Code's
+format, so existing hooks copy over. Put them in `~/.vesper/hooks.json` (for every project) or
+in a project's `.vesper/hooks.json`:
+
+```json
+{"hooks": {"PostToolUse": [{"matcher": "write_file|edit_file",
+                            "hooks": [{"type": "command", "command": "ruff format ."}]}]}}
+```
+
+The events are `PreToolUse` (exit code 2 blocks the step and tells the agent why),
+`PostToolUse` (exit code 2 sends your message to the agent), `UserPromptSubmit` (exit code 2
+blocks the message; anything printed is added to it) and `Stop` (exit code 2 sends the agent
+back to work, up to three times). The hook gets the details as JSON on stdin. The matcher is a
+regular expression on the tool name, and Claude Code's names (`Write`, `Edit`, `Bash`, `Read`,
+...) match too. A project's hooks run only after you approve the file with `/hooks approve`,
+and again after every change to it. `/hooks` lists what is configured. Commands run in your
+system shell (cmd.exe on Windows).
+
 ### Helpers for big searches
 
 The agent can hand a question to a helper: a second agent with a fresh context that can read,
@@ -643,7 +664,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.28.1` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.29.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

@@ -449,6 +449,12 @@ class Session:
         self.history: list[BaseMessage] = []
         self.id = session_id or new_id()
         self.title = ""
+        from vesper import hooks
+
+        if workspace.hooks is None or type(workspace.hooks) is hooks.Runner:  # this conversation's notices
+            workspace.hooks = hooks.Runner(notice=lambda text: self._pending.append(("notice", {"text": text})),
+                                           session_id=lambda: self.id)
+        self._stop_rounds = 0
         self._saved = False                     # a row exists in the store
         self.tokens = {"input": 0, "output": 0, "cached": 0, "context": 0}
         self._llm = llm
@@ -627,7 +633,7 @@ class Session:
             last = state["messages"][-1] if state["messages"] else None
             if not isinstance(last, AIMessage) or last.tool_calls:
                 return None
-            return session._run_check()
+            return session._run_check() or session._run_stop_hooks(last)
 
         return [guard, steering, check, *prov.agent_middleware(self._llm)]
 
@@ -690,6 +696,24 @@ class Session:
         self._turn_id = max(int(time.time() * 1000), self._turn_id + 1)
         note = HumanMessage(checks.failure_prompt(command, code, tail), id=f"vesper-check-{self._turn_id}",
                             additional_kwargs={CHECK_KEY: {"command": command, "code": code, "output": shown}})
+        return {"messages": [note], "jump_to": "model"}
+
+    def _run_stop_hooks(self, last: AIMessage) -> dict | None:
+        """The agent is about to finish: a Stop hook may send it back with feedback."""
+        from vesper import hooks
+
+        ws = self.workspace
+        if ws.hooks is None or ws.stopped or self._stop_rounds >= hooks.MAX_STOP_ROUNDS:
+            return None
+        feedback = ws.hooks.stop(ws.root, text_of(last.content))
+        if not feedback:
+            return None
+        self._stop_rounds += 1
+        self._event("notice", {"text": "A Stop hook sent the agent back to work."})
+        self._turn_id = max(int(time.time() * 1000), self._turn_id + 1)
+        note = HumanMessage(f"A Stop hook did not let you finish yet. Its feedback:\n{feedback}",
+                            id=f"vesper-check-{self._turn_id}",
+                            additional_kwargs={CHECK_KEY: {"command": "Stop hook", "code": 2, "output": feedback}})
         return {"messages": [note], "jump_to": "model"}
 
     # ---------------------------------------------------------------- steering
@@ -1083,8 +1107,17 @@ class Session:
         `images` are image content blocks (`attachments.image_block`), sent with this message only."""
         self.workspace.stopped = False
         self.start_with_preferred()  # a model that ran out earlier may be usable again
-        self._edited, self._check_rounds = False, 0
+        self._edited, self._check_rounds, self._stop_rounds = False, 0, 0
         self.workspace._seen.clear()
+        if self.workspace.hooks is not None:  # UserPromptSubmit hooks may block the message or add context
+            blocked, context = self.workspace.hooks.prompt(self.workspace.root, shown or text)
+            yield from self._drain()
+            if blocked:
+                yield "notice", {"text": f"A hook blocked this message: {blocked}"}
+                yield "done", {}
+                return
+            if context:
+                text += f"\n\n<note>Context from a hook:\n{context}</note>"
         new_chat = not self._saved
         self._ensure_saved(shown or text)
         self._log("prompt", detail={"text": shown or text})
