@@ -389,6 +389,27 @@ The last few conversations are also listed each time Vesper starts, so the one y
 is often already on screen. You can ask Vesper itself too: "show me my old
 conversations" gets you the same instructions.
 
+## Use Vesper in your editor
+
+Vesper speaks the [Agent Client Protocol](https://agentclientprotocol.com), so editors that
+support it (Zed, for one) can run it as their agent. `vesper acp` is the command; it uses
+the model you picked in the terminal app. In Zed, add this to `settings.json` and pick
+Vesper in the agent panel:
+
+```json
+"agent_servers": {
+  "Vesper": { "type": "custom", "command": "vesper", "args": ["acp"] }
+}
+```
+
+The editor shows Vesper's answer, its reasoning, each step with the diff of every edit, and
+its task list. Edits and commands ask in the editor first, with Allow, Always allow and
+Reject; the mode picker switches between ask, auto-edit, yolo and plan. Files and images you
+attach go along with the message, your custom commands show in the `/` menu, and every
+conversation is saved with the others, so the editor can reopen it and `vesper sessions`
+lists it. MCP servers configured in the editor are not started yet; Vesper's own
+`mcp.json` still applies.
+
 ## Use Vesper from Telegram
 
 Vesper can work for you from a Telegram chat. Every message you send becomes a turn of a

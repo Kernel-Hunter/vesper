@@ -1819,6 +1819,10 @@ def main(argv: list[str] | None = None) -> int:
         return sessions_command(argv[1:])
     if argv and argv[0] == "logs":
         return logs_command(argv[1:])
+    if argv and argv[0] == "acp":
+        from vesper import acp
+
+        return acp.main()
     if argv and argv[0] == "telegram":
         from vesper.telegram import command as telegram_command
 
@@ -1826,7 +1830,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(argv) == 1 and not argv[0].startswith("-"):
         import difflib
 
-        close = difflib.get_close_matches(argv[0].lower(), ["sessions", "logs", "app", "telegram"], n=1, cutoff=0.75)
+        close = difflib.get_close_matches(argv[0].lower(), ["sessions", "logs", "app", "telegram", "acp"], n=1, cutoff=0.75)
         if close and close[0] != argv[0]:
             err_console.print(f"Did you mean `vesper {close[0]}`? To ask the agent a one-word question, "
                               f"add a question mark: vesper \"{argv[0]}?\"", style=WARN)
