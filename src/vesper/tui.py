@@ -122,6 +122,7 @@ SLASH = {
     "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
+    "/export": "save this conversation as Markdown or HTML (/export html [path])",
     "/memory": "notes Vesper keeps between conversations (/memory forget N removes one)",
     "/hooks": "your commands that run before or after the agent's steps (/hooks approve trusts this project's)",
     "/diagnostics": "type errors from the language server after each edit go back to Vesper (/diagnostics on|off)",
@@ -138,7 +139,7 @@ SLASH = {
 ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sessions", "/delete": "/sessions rm", "/log": "/logs",
            "/allow": "/permissions", "/thinking": "/think"}
 HELP_GROUPS = [
-    ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/logs"]),
+    ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/export", "/logs"]),
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
     ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/hooks", "/memory", "/git", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
@@ -862,6 +863,31 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def export(self, arg: str) -> None:
+        """/export [md|html] [path]: write this conversation to a file (default: here, Markdown)."""
+        from vesper import export
+
+        words = arg.split(maxsplit=1)
+        fmt = "md"
+        if words and words[0].lower().lstrip(".") in ("md", "markdown", "html"):
+            fmt = "html" if words[0].lower().lstrip(".") == "html" else "md"
+            words = words[1:]
+        if not self.session.history:
+            note("Nothing to export yet: this conversation is empty.")
+            return
+        row = (self.store.get_session(self.session.id) if self.store is not None else None) or {
+            "id": self.session.id, "title": self.session.title or "", "cwd": str(self.workspace.root),
+            "model": self.cfg.get("model", ""), "created_at": None}
+        target = Path(os.path.expanduser(words[0])) if words else self.workspace.root
+        if not target.is_absolute():
+            target = self.workspace.root / target
+        try:
+            path = export.write(row, self.session.history, fmt, target)
+        except (OSError, ValueError) as exc:
+            note(f"Could not export: {exc}")
+            return
+        note(f"Saved {path}")
+
     def memory(self, arg: str) -> None:
         from vesper import memory
 
@@ -1394,6 +1420,8 @@ class App:
             self.hooks(arg)
         elif cmd == "/memory":
             self.memory(arg)
+        elif cmd == "/export":
+            self.export(arg)
         elif cmd == "/small":
             self.small(arg)
         elif cmd == "/fallback":
@@ -1680,10 +1708,13 @@ def print_mode(root: Path, question: str, cfg: dict, mode: str, store=None, resu
 
 # ---------------------------------------------------------------- `vesper sessions` and `vesper logs`
 def sessions_command(argv: list[str]) -> int:
+    if argv and argv[0] == "export":
+        return sessions_export(argv[1:])
     if argv and argv[0] in ("rm", "delete", "rename"):
         return sessions_change(argv)
     ap = argparse.ArgumentParser(prog="vesper sessions", description="List saved conversations, newest first.",
-                                 epilog="Also: vesper sessions rm ID [ID...] · vesper sessions rename ID TITLE")
+                                 epilog="Also: vesper sessions rm ID [ID...] · vesper sessions rename ID TITLE · "
+                                        "vesper sessions export [ID] [--html] [-o PATH]")
     ap.add_argument("-n", type=positive, default=20, help="how many to show (default 20)")
     ap.add_argument("--here", action="store_true", help="only conversations in the current folder")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
@@ -1707,6 +1738,41 @@ def positive(value: str) -> int:
     if n < 1:
         raise argparse.ArgumentTypeError("must be 1 or more")
     return n
+
+
+def sessions_export(argv: list[str]) -> int:
+    """vesper sessions export [ID] [--html] [-o PATH] [--thinking]"""
+    from vesper import export
+
+    ap = argparse.ArgumentParser(prog="vesper sessions export", description="Save a conversation as a Markdown or HTML file.")
+    ap.add_argument("id", nargs="?", help="session id or its first characters (default: the latest conversation)")
+    ap.add_argument("--html", action="store_true", help="a self-contained HTML page instead of Markdown")
+    ap.add_argument("-o", "--output", help="file or folder to write (default: the current folder); - prints it")
+    ap.add_argument("--thinking", action="store_true", help="include the model's reasoning")
+    args = ap.parse_args(argv)
+    store = open_store()
+    if store is None:
+        return 1
+    if args.id:
+        row = store.get_session(args.id)
+    else:
+        latest = store.list_sessions(1)
+        row = latest[0] if latest else None
+    if row is None:
+        err_console.print(f"No conversation matches {args.id!r}." if args.id else "No saved conversations yet.", style=ERR)
+        return 1
+    fmt = "html" if args.html or (args.output or "").lower().endswith((".html", ".htm")) else "md"
+    messages = store.load_messages(row["id"])
+    if args.output == "-":
+        sys.stdout.write(export.render(row, messages, fmt, args.thinking))
+        return 0
+    try:
+        path = export.write(row, messages, fmt, Path(args.output) if args.output else None, args.thinking)
+    except (OSError, ValueError) as exc:
+        err_console.print(f"Could not export: {exc}", style=ERR)
+        return 1
+    note(f"Saved {path}")
+    return 0
 
 
 def sessions_change(argv: list[str]) -> int:

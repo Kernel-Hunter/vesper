@@ -114,6 +114,7 @@ command line and all tool output, where the normal view prints one summary line 
 | `/logs` | what the agent did in this conversation (`/logs full` adds arguments and output) |
 | `/verbose` or `Ctrl+O` | transcript view: thinking and full tool output while it works |
 | `/transcript` | print the whole conversation in detail: thinking, commands, edits, output |
+| `/export` | save the conversation as a Markdown file here (`/export html [path]` for a web page) |
 | `/status` | model, folder, session id, tokens used and how full the context is |
 | `/plan` | plan mode on or off: Vesper reads and proposes a plan, and works after you approve it |
 | `/undo` | put files back to how they were before Vesper's last changes |
@@ -478,10 +479,17 @@ vesper -r 3f9a2c          # resume one by id (the first characters are enough)
 vesper sessions           # list saved conversations, newest first
 vesper sessions rm 2      # delete one (a number from the list or an id)
 vesper sessions rename 2 "auth refactor"
+vesper sessions export    # the latest conversation as Markdown, in this folder
+vesper sessions export 3f9a2c --html -o ~/Desktop   # as a web page
 vesper logs               # what the agent did in the latest conversation
 vesper logs 3f9a2c --full # the same, with tool arguments and output
 vesper logs --json        # one JSON object per event, for scripts
 ```
+
+An export holds your messages, the answers and every step, folded, with its output cut
+short; `--thinking` adds the model's reasoning. The HTML page is one file with no scripts
+and nothing loaded from elsewhere, so it opens anywhere and is safe to send. In the
+desktop app, right-click a conversation and choose Export.
 
 Each step is saved as soon as it finishes, so stopping an answer, a crash or a force quit
 loses at most the step that was running. An answer cut off half way is kept with

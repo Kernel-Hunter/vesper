@@ -23,6 +23,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Git safety net, part one** (0.25.0): `/git auto on` commits each turn's changes (only Vesper's files, the user's identity and hooks, never during a merge or on a detached HEAD); `/undo` takes the commit back. A conversation deleted in another window stops saving instead of printing errors.
 - **Daylight on dark terminals** (0.25.1): Daylight keeps its exact colors in a dark terminal; only the text and diff backgrounds change so they stay readable. `/theme daylight` fits either kind of window.
 - **Subagents** (0.28.0): a `subagent` tool hands a self-contained question to a helper with a fresh context and read-only tools (files and the web); only its findings come back. Up to four run at once, their steps show live, their tokens count toward the answer, and stopping the answer stops them.
+- **Session export** (0.32.0): `/export`, `vesper sessions export` and Export in the desktop app's conversation menu save a conversation as Markdown or as a single HTML page with no scripts, with each step folded and its output cut short.
 - **Editor agent over ACP** (0.31.0): `vesper acp` runs Vesper as the agent inside editors that speak the Agent Client Protocol, such as Zed: streamed answers and reasoning, every step with its diff, the task list as a plan, approvals as the editor's permission prompts, the four modes, custom commands, attached files and images, and saved sessions the editor can reopen.
 - **Memory across sessions** (0.30.0): a `remember` tool keeps notes about the project or the user in `~/.vesper/memory/` (asking first, like an edit); every conversation starts with them, and `/memory` lists and forgets them.
 - **Hooks** (0.29.0): `PreToolUse`, `PostToolUse`, `UserPromptSubmit` and `Stop` commands in `~/.vesper/hooks.json` or a project's `.vesper/hooks.json`, in Claude Code's format with its tool names accepted. Exit code 2 blocks or sends feedback; a project's file runs only once approved with `/hooks approve`, and the agent must ask to write either file. The installers no longer use the GitHub API, which refused them on shared networks.
@@ -52,9 +53,8 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Next, in order
 
-1. **Session export.** A conversation as a Markdown or HTML file to share or keep.
-2. **Checkpoint timeline.** Every turn's file state, listed, with a jump back to any of them.
-3. **Editor MCP servers over ACP.** Start the MCP servers an editor passes in `session/new`.
+1. **Checkpoint timeline.** Every turn's file state, listed, with a jump back to any of them.
+2. **Editor MCP servers over ACP.** Start the MCP servers an editor passes in `session/new`.
 
 Later: a browser tool, symbol and URL mentions, keybindings and a vim mode, and scheduled
 recipes.

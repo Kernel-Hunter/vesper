@@ -476,6 +476,11 @@ def tool_start_line(name: str, args: dict) -> Text:
                          ("  " + summarize_args(name, args), MUTED))
 
 
+def step_title(name: str, args: dict) -> str:
+    """A tool step as one plain line ("Edit  src/app.py"), for exports and editors."""
+    return " ".join(f"{TOOL_LABELS.get(name, name)}  {summarize_args(name, args)}".split()) or name
+
+
 def tool_end_line(name: str, output: str, ok: bool, ms: int | None, verbose: bool = False) -> Text:
     line = Text("  ╰ ", style=FAINT)
     if not ok:

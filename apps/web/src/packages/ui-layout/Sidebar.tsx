@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api, type SavedSession } from '../connection/api'
 import {
-  currentChat, deleteSession, folderName, forkSession, isDesktop, newChat, openFolderIn, openSession, openSessionWindow, openSettings,
+  currentChat, deleteSession, exportSession, folderName, forkSession, isDesktop, newChat, openFolderIn, openSession, openSessionWindow, openSettings,
   renameSession, selectChat, toggleTranscript, updateSidebar, useStore,
 } from '../store/store'
 import { Icon } from '../ui-primitives/Icon'
@@ -62,6 +62,7 @@ export function SessionMenu({ row, x, y, sections, siblings, onClose, topbar = f
   const ref = useRef<HTMLDivElement>(null)
   const [moving, setMoving] = useState(false)
   const [opening, setOpening] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const transcript = useStore(s => s.transcript)
   const [section, setSection] = useState(row.section)
   const [renaming, setRenaming] = useState(false)
@@ -93,6 +94,10 @@ export function SessionMenu({ row, x, y, sections, siblings, onClose, topbar = f
         onClick={() => action(() => { void openSessionWindow(row.id) })}>New window</button>
       <button role="menuitem" disabled={!row.cwd} onClick={() => action(() => { void openFolderIn(row.cwd, 'vscode') })}>VS Code</button>
       <button role="menuitem" disabled={!row.cwd} onClick={() => action(() => { void openFolderIn(row.cwd, 'finder') })}>{/Mac/.test(navigator.userAgent) ? 'Finder' : 'File manager'}</button>
+    </> : exporting ? <>
+      <button role="menuitem" onClick={() => setExporting(false)}>‹ Back</button>
+      <button role="menuitem" onClick={() => action(() => { void exportSession(row.id, 'md') })}>Markdown</button>
+      <button role="menuitem" onClick={() => action(() => { void exportSession(row.id, 'html') })}>Web page (HTML)</button>
     </> : renaming ? <form className="menu-form" onSubmit={e => { e.preventDefault(); if (title.trim()) action(() => { void renameSession(row.id, title) }) }}>
       <label>Rename<input className="input" autoFocus value={title} maxLength={80} onChange={e => setTitle(e.target.value)} /></label>
       <button type="submit">Save</button><button type="button" onClick={() => setRenaming(false)}>Cancel</button>
@@ -113,6 +118,8 @@ export function SessionMenu({ row, x, y, sections, siblings, onClose, topbar = f
       <button role="menuitem" onClick={() => setRenaming(true)}>Rename</button>
       <button role="menuitem" disabled={row.working} title={row.working ? 'Wait for this conversation to finish' : 'Fork the conversation history (same folder)'}
         onClick={() => action(() => { void forkSession(row.id) })}>Fork</button>
+      <button role="menuitem" disabled={!row.saved} title={row.saved ? 'Save as a Markdown or HTML file' : 'Nothing saved yet'}
+        onClick={() => setExporting(true)}>Export ›</button>
       {topbar ? <>
         <button role="menuitem" onClick={() => action(toggleTranscript)}>Transcript view {transcript ? '✓' : ''}</button>
         <button role="menuitem" onClick={() => action(() => openSettings('appearance'))}>Appearance</button>

@@ -57,8 +57,7 @@ def tool_title(name: str, args: dict) -> str:
     try:
         from vesper import ui
 
-        line = " ".join(ui.tool_start_line(name, args).plain.split())
-        return line.lstrip("●•· ").strip() or name
+        return ui.step_title(name, args)
     except Exception:  # noqa: BLE001
         return name
 

@@ -355,6 +355,23 @@ export async function deleteSession(id: string): Promise<void> {
   toast('Conversation deleted')
 }
 
+/** Save a conversation as a Markdown or HTML file (the browser's or Electron's save flow). */
+export async function exportSession(id: string, format: 'md' | 'html'): Promise<void> {
+  try {
+    const { name, text } = await api.exportSession(id, format)
+    const url = URL.createObjectURL(new Blob([text], { type: format === 'html' ? 'text/html' : 'text/markdown' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = name
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  } catch (e) {
+    toast(`Could not export: ${errorText(e)}`, 'error')
+  }
+}
+
 export async function renameSession(id: string, title: string): Promise<void> {
   const clean = title.trim().replace(/\s+/g, ' ').slice(0, 80)
   if (!clean) return

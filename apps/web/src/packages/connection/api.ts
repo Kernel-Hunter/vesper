@@ -275,6 +275,8 @@ export const api = {
   deleteSession: async (id: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   },
+  exportSession: async (id: string, format: 'md' | 'html'): Promise<{ name: string; text: string }> =>
+    (await request(`/api/sessions/${encodeURIComponent(id)}/export?format=${format}`)).json(),
   renameSession: async (id: string, title: string): Promise<void> => {
     await request(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: 'POST', json: { title } })
   },

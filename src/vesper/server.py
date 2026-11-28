@@ -1184,6 +1184,19 @@ def create_app(token: str, engine: Engine | None = None, allowed_hosts=None) -> 
             raise HTTPException(404, "That conversation is not in the history.")
         return found
 
+    @app.get("/api/sessions/{session_id}/export", dependencies=[Depends(auth)])
+    def export_session(session_id: str, format: str = "md", thinking: bool = False):
+        from vesper import export
+
+        if format not in export.FORMATS:
+            raise HTTPException(400, "The format must be md or html.")
+        db = engine.history_db()
+        row = db.get_session(session_id) if db is not None and SESSION_ID.match(session_id) else None
+        if row is None:
+            raise HTTPException(404, "That conversation is not in the history.")
+        text = export.render(row, db.load_messages(row["id"]), format, thinking)
+        return {"name": export.file_name(row, format), "text": text}
+
     @app.delete("/api/sessions/{session_id}", dependencies=[Depends(auth)])
     def delete_session(session_id: str):
         if not SESSION_ID.match(session_id):
