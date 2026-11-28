@@ -270,3 +270,24 @@ def test_mcp_api_shows_saves_approves_and_validates(tmp_path, monkeypatch):
     assert {s["name"] for s in saved["servers"]} == {"fake", "mine"} and '"mine"' in saved["config"]
     engine.shutdown(timeout=0.5)  # quitting stops every server
     assert mcp.manager().servers == {}
+
+
+def test_servers_an_editor_hands_over_start_for_that_session(tmp_path):
+    from vesper import acp
+
+    specs = acp.mcp_specs([
+        {"name": "fake", "command": sys.executable, "args": ["-I", SERVER, "0"], "env": [{"name": "X", "value": "1"}]},
+        {"type": "http", "name": "web", "url": "https://example.com/mcp", "headers": [{"name": "Auth", "value": "t"}]},
+        {"type": "sse", "name": "old", "url": "https://example.com/sse", "headers": []},
+        {"name": "", "command": "x"},
+    ])
+    assert [s["name"] for s in specs] == ["fake", "web"]
+    assert specs[0]["spec"]["env"] == {"X": "1"} and specs[1]["spec"] == {"url": "https://example.com/mcp", "headers": {"Auth": "t"}}
+    proj = tmp_path / "work"
+    proj.mkdir()
+    llm = ToolFake(disable_streaming=True, messages=iter([call("mcp__fake__echo", text="hi"), AIMessage("done")]))
+    s = Session(llm, Workspace(proj, mode="yolo"))
+    s.extra_mcp = specs[:1]  # no mcp.json at all: the editor's server alone
+    events = list(s.ask("echo"))
+    assert "mcp__fake__echo" in llm.bound
+    assert [d["output"] for e, d in events if e == "tool_end"] == ["echo: hi"]

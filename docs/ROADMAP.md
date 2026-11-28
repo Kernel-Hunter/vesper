@@ -23,6 +23,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Git safety net, part one** (0.25.0): `/git auto on` commits each turn's changes (only Vesper's files, the user's identity and hooks, never during a merge or on a detached HEAD); `/undo` takes the commit back. A conversation deleted in another window stops saving instead of printing errors.
 - **Daylight on dark terminals** (0.25.1): Daylight keeps its exact colors in a dark terminal; only the text and diff backgrounds change so they stay readable. `/theme daylight` fits either kind of window.
 - **Subagents** (0.28.0): a `subagent` tool hands a self-contained question to a helper with a fresh context and read-only tools (files and the web); only its findings come back. Up to four run at once, their steps show live, their tokens count toward the answer, and stopping the answer stops them.
+- **Editor MCP servers** (0.34.0): over ACP, the stdio and HTTP MCP servers an editor passes in `session/new` start for that session, next to Vesper's own.
 - **Checkpoint timeline** (0.33.0): `/checkpoints` and the Timeline tab of the desktop review pane list every message that changed files, with the files and line counts, and put the files back as they were before any of them while keeping the conversation.
 - **Session export** (0.32.0): `/export`, `vesper sessions export` and Export in the desktop app's conversation menu save a conversation as Markdown or as a single HTML page with no scripts, with each step folded and its output cut short.
 - **Editor agent over ACP** (0.31.0): `vesper acp` runs Vesper as the agent inside editors that speak the Agent Client Protocol, such as Zed: streamed answers and reasoning, every step with its diff, the task list as a plan, approvals as the editor's permission prompts, the four modes, custom commands, attached files and images, and saved sessions the editor can reopen.
@@ -54,7 +55,8 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Next, in order
 
-1. **Editor MCP servers over ACP.** Start the MCP servers an editor passes in `session/new`.
-
-Later: a browser tool, symbol and URL mentions, keybindings and a vim mode, and scheduled
-recipes.
+1. **URL and symbol mentions.** `@https://...` attaches the page as text; `@Name` attaches the
+   definition of a function or class found in the project.
+2. **Vim mode and keybindings.** Vi editing in the terminal prompt and a keybindings file.
+3. **Browser tool.** Open a page in a headless browser, click and read it, for web apps.
+4. **Scheduled recipes.** Run a saved prompt on a schedule, with the result kept as a session.

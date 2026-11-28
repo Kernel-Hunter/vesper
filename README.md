@@ -416,8 +416,8 @@ its task list. Edits and commands ask in the editor first, with Allow, Always al
 Reject; the mode picker switches between ask, auto-edit, yolo and plan. Files and images you
 attach go along with the message, your custom commands show in the `/` menu, and every
 conversation is saved with the others, so the editor can reopen it and `vesper sessions`
-lists it. MCP servers configured in the editor are not started yet; Vesper's own
-`mcp.json` still applies.
+lists it. MCP servers set up in the editor (stdio or HTTP) start for that session next to
+the ones in Vesper's own `mcp.json`.
 
 ## Use Vesper from Telegram
 

@@ -441,13 +441,23 @@ class Manager:
     def changed(self) -> None:
         self.version += 1
 
-    def for_root(self, root: str) -> list[Server]:
-        """Start (once) every trusted server for this folder; returns them, ready or not."""
+    def for_root(self, root: str, extra: list[dict] | tuple = ()) -> list[Server]:
+        """Start (once) every trusted server for this folder; returns them, ready or not.
+
+        `extra` are servers a client handed over for one session ({"name", "spec"}, from an
+        editor over ACP). The user set them up in that client, so they count as trusted; a
+        configured server of the same name wins.
+        """
         wanted = []
+        items = [i for i in configured(root) if i["trusted"]]
+        names = {i["name"] for i in items}
+        for e in extra:
+            if e["name"] not in names:
+                names.add(e["name"])
+                items.append({"name": e["name"], "spec": e["spec"],
+                              "fingerprint": fingerprint(Path("acp-client"), e["name"], e["spec"])})
         with self._lock:
-            for item in configured(root):
-                if not item["trusted"]:
-                    continue
+            for item in items:
                 server = self.servers.get(item["fingerprint"])
                 if server is None or server.status in ("failed", "stopped") and server.root != str(root):
                     server = Server(item["name"], item["spec"], str(root))

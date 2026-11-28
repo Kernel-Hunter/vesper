@@ -471,6 +471,7 @@ class Session:
         self._helper_tokens = {"input": 0, "output": 0, "cached": 0}  # spent by helpers this turn
         self._helper_lock = threading.Lock()
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
+        self.extra_mcp: list[dict] = []             # MCP servers a client handed over ({"name", "spec"}), see acp.py
         self._told_trimmed = False                  # the "shortened copy" notice is shown once per session
         self._told_mcp: set[str] = set()            # MCP problems already shown in this session
         self._steer: list[str] = []                 # messages sent during a turn, joined at its next step
@@ -513,7 +514,7 @@ class Session:
         from vesper import mcp
 
         try:
-            servers = mcp.manager().for_root(str(self.workspace.root))
+            servers = mcp.manager().for_root(str(self.workspace.root), self.extra_mcp)
         except Exception as exc:  # noqa: BLE001 - a broken config must never stop the agent
             self._mcp_notice(f"MCP: {exc}")
             return []

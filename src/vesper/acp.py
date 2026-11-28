@@ -13,10 +13,11 @@ What maps to what:
   command. The reply ends with stopReason end_turn, or cancelled after session/cancel.
 - session/set_mode: the approval modes (ask, auto-edit, yolo, plan).
 - Approvals become session/request_permission (allow once, allow always, reject).
+- mcpServers: the editor's stdio and HTTP MCP servers start for that session, next to the
+  ones in Vesper's own mcp.json (a configured server of the same name wins).
 
-The editor's own MCP servers (the mcpServers list) are not started yet; Vesper's own MCP
-configuration still applies. Nothing but protocol messages may reach stdout, so `main` points
-sys.stdout at stderr before anything else runs.
+Nothing but protocol messages may reach stdout, so `main` points sys.stdout at stderr before
+anything else runs.
 """
 from __future__ import annotations
 
@@ -44,6 +45,22 @@ KINDS = {
     "web_fetch": "fetch", "web_search": "fetch", "subagent": "think", "update_tasks": "think",
 }
 PLAN_STATUS = {"pending": "pending", "active": "in_progress", "done": "completed"}
+
+
+def mcp_specs(servers) -> list[dict]:
+    """The editor's mcpServers as Vesper's MCP specs: [{"name", "spec"}]. SSE servers are left out."""
+    out = []
+    for s in servers if isinstance(servers, list) else []:
+        if not isinstance(s, dict) or not str(s.get("name") or "").strip():
+            continue
+        pairs = s.get("headers") if "url" in s else s.get("env")
+        table = {str(p.get("name")): str(p.get("value", "")) for p in pairs or [] if isinstance(p, dict) and p.get("name")}
+        if s.get("type") == "http" and s.get("url"):
+            out.append({"name": str(s["name"]), "spec": {"url": str(s["url"]), "headers": table}})
+        elif s.get("command") and s.get("type") in (None, "stdio"):
+            out.append({"name": str(s["name"]), "spec": {"command": str(s["command"]),
+                                                         "args": [str(a) for a in s.get("args") or []], "env": table}})
+    return out
 
 
 class RpcError(Exception):
@@ -322,7 +339,7 @@ class Agent:
 
         return prov.get_llm(cfg.get("provider"), cfg.get("model") or None, thinking=cfg.get("thinking") or "off")
 
-    def _open(self, cwd: str, session_id: str | None = None) -> AcpSession:
+    def _open(self, cwd: str, session_id: str | None = None, mcp_servers=None) -> AcpSession:
         from vesper import permissions
         from vesper import providers as prov
         from vesper.coder import Session
@@ -341,6 +358,7 @@ class Agent:
         session = Session(self._llm(cfg), ws, self.store, session_id=session_id, source="acp",
                           provider=cfg.get("provider", ""), model=cfg.get("model", ""),
                           context_tokens=prov.context_tokens(cfg.get("provider"), cfg.get("model")))
+        session.extra_mcp = mcp_specs(mcp_servers)
         acp = AcpSession(session, self.conn)
         ws.approve = acp.approve
         with self._sessions_lock:
@@ -380,7 +398,7 @@ class Agent:
             "agentCapabilities": {
                 "loadSession": self.store is not None,
                 "promptCapabilities": {"image": True, "audio": False, "embeddedContext": True},
-                "mcpCapabilities": {"http": False, "sse": False},
+                "mcpCapabilities": {"http": True, "sse": False},
             },
             "agentInfo": {"name": "vesper", "title": "Vesper", "version": __version__},
             "authMethods": [],
@@ -390,7 +408,7 @@ class Agent:
         return {}
 
     def session_new(self, params: dict) -> dict:
-        acp = self._open(str(params.get("cwd") or os.getcwd()))
+        acp = self._open(str(params.get("cwd") or os.getcwd()), mcp_servers=params.get("mcpServers"))
         timer = threading.Timer(0.1, self._send_commands, args=(acp,))  # once the editor knows the id
         timer.daemon = True
         timer.start()
@@ -402,7 +420,8 @@ class Agent:
         row = self.store.get_session(str(params.get("sessionId", "")))
         if row is None:
             raise RpcError(-32002, "Unknown session")
-        acp = self.sessions.get(row["id"]) or self._open(str(params.get("cwd") or row["cwd"]), row["id"])
+        acp = self.sessions.get(row["id"]) or self._open(str(params.get("cwd") or row["cwd"]), row["id"],
+                                                          params.get("mcpServers"))
         acp.replay()
         self._send_commands(acp)
         return {"modes": self._modes(acp)}
