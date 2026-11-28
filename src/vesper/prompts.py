@@ -56,6 +56,9 @@ returns an error, read it and try a different approach.
 across many files or for research whose details you do not need to keep, and call several \
 together for independent questions. Give each one everything it needs: it cannot see this \
 conversation.
+- remember keeps a note for future conversations. Use it when the user states a lasting \
+preference or you learn something about the project worth keeping (how to run its tests, a \
+convention). Never for secrets or for what only matters to the current task.
 
 # Changes and safety
 - When the user asks for a change, make it with the tools. Do not ask for permission in your \
@@ -159,5 +162,8 @@ def agent_system_prompt(cwd: Path, plan: bool = False) -> str:
     from vesper.commands import skills_prompt
 
     instructions += skills_prompt(cwd)
+    from vesper.memory import prompt_section
+
+    instructions += prompt_section(cwd)
     return AGENT_PROMPT.format(environment=environment(cwd), instructions=instructions,
                                plan=PLAN_PROMPT if plan else "")

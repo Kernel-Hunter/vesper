@@ -51,14 +51,14 @@ TOOL_LABELS = {
     "list_files": "List", "read_file": "Read", "glob": "Find", "grep": "Search",
     "change_directory": "Go to", "write_file": "Write",
     "edit_file": "Edit", "run_command": "Run", "update_tasks": "Tasks", "web_fetch": "Fetch",
-    "web_search": "Search the web", "run_check": "Check", "subagent": "Helper",
+    "web_search": "Search the web", "run_check": "Check", "subagent": "Helper", "remember": "Remember",
 }
 # The argument that says most about a tool call.
 MAIN_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path", "list_files": "path",
     "change_directory": "path", "glob": "pattern", "grep": "pattern",
     "run_command": "command", "run_check": "command", "web_fetch": "url", "web_search": "query",
-    "subagent": "task",
+    "subagent": "task", "remember": "note",
 }
 READING = frozenset({"list_files", "read_file", "glob", "grep", "change_directory", "web_fetch", "web_search", "subagent"})
 CHANGING = frozenset({"write_file", "edit_file"})

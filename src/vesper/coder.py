@@ -545,7 +545,10 @@ class Session:
 
         self.workspace.mcp_servers = self._mcp_servers()
         ready = tuple((s.name, len(s.tools)) for s in self.workspace.mcp_servers if s.status == "ready")
-        key = (self.workspace.root, self.workspace.mode == "plan", ready, mcp.manager().version if ready else 0)
+        from vesper import memory
+
+        key = (self.workspace.root, self.workspace.mode == "plan", ready, mcp.manager().version if ready else 0,
+               memory.version(self.workspace.root))
         if self._agent is None or self._agent_key != key:
             if self._helper_tool is None:
                 from vesper import subagents

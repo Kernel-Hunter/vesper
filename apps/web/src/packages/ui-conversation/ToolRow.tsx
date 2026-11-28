@@ -23,6 +23,7 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   mcp_find: { verb: 'Find tools', icon: 'plug', arg: 'query' },
   mcp_call: { verb: 'Use', icon: 'plug', arg: 'tool' },
   subagent: { verb: 'Helper', icon: 'spark', arg: 'task' },
+  remember: { verb: 'Remember', icon: 'bolt', arg: 'note' },
 }
 
 export const TOOL_VERBS: Record<string, string> = Object.fromEntries(Object.entries(TOOLS).map(([name, t]) => [name, t.verb]))

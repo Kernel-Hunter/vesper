@@ -122,6 +122,7 @@ SLASH = {
     "/fallback": "switch models by itself when one runs out of credits (/fallback on, /fallback off, /fallback list)",
     "/small": "a cheaper model for summaries and chat titles (/small ollama llama3.2, /small off)",
     "/check": "tests or lint that run after Vesper edits files; failures go back to it (/check pytest -q, /check off)",
+    "/memory": "notes Vesper keeps between conversations (/memory forget N removes one)",
     "/hooks": "your commands that run before or after the agent's steps (/hooks approve trusts this project's)",
     "/diagnostics": "type errors from the language server after each edit go back to Vesper (/diagnostics on|off)",
     "/permissions": "commands and sites that run without asking (/permissions remove N)",
@@ -139,7 +140,7 @@ ALIASES = {"/clear": "/new", "/quit": "/exit", "/q": "/exit", "/history": "/sess
 HELP_GROUPS = [
     ("Conversation", ["/new", "/resume", "/sessions", "/rewind", "/undo", "/compact", "/transcript", "/logs"]),
     ("Model", ["/model", "/key", "/small", "/fallback", "/think"]),
-    ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/hooks", "/git", "/cd", "/permissions", "/mcp", "/status"]),
+    ("How Vesper works", ["/plan", "/mode", "/check", "/diagnostics", "/hooks", "/memory", "/git", "/cd", "/permissions", "/mcp", "/status"]),
     ("Look", ["/theme", "/verbose"]),
     ("Elsewhere", ["/telegram", "/app"]),
 ]
@@ -861,6 +862,26 @@ class App:
         else:
             note("No check command for this folder." + (f" Try: /check {guess}" if guess else " Set one with /check <command>, for example /check pytest -q."))
 
+    def memory(self, arg: str) -> None:
+        from vesper import memory
+
+        root = self.workspace.root
+        words = arg.split()
+        if words[:1] == ["forget"]:
+            if len(words) < 2 or not words[1].isdigit():
+                note("Which one? /memory forget N, with N from /memory.")
+                return
+            gone = memory.forget(root, int(words[1]))
+            note(f"Forgot: {gone}" if gone else f"There is no note {words[1]}. See /memory.")
+            return
+        listed = memory.listing(root)
+        if not listed:
+            note("No notes yet. Vesper saves lasting facts with its remember tool (it asks first); "
+                 "you can also say \"remember that ...\".")
+            return
+        rows = [f"{i:>3}. {'you' if scope == 'user' else 'project':<8}{text}" for i, (scope, text) in enumerate(listed, 1)]
+        note("Memory:\n" + "\n".join(rows) + "\n  /memory forget N removes one. Files: " + str(memory.folder()))
+
     def hooks(self, arg: str) -> None:
         from vesper import hooks
 
@@ -1371,6 +1392,8 @@ class App:
             self.diagnostics(arg)
         elif cmd == "/hooks":
             self.hooks(arg)
+        elif cmd == "/memory":
+            self.memory(arg)
         elif cmd == "/small":
             self.small(arg)
         elif cmd == "/fallback":

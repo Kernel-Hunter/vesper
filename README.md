@@ -188,6 +188,17 @@ again, up to three times. Answers that change no files skip the check. In the de
 the Environment panel has the same setting, with a one-click suggestion. The command is
 saved for the folder in `~/.vesper/config.json`, so a cloned repository cannot set one.
 
+### Memory
+
+Vesper keeps notes between conversations. When you state a lasting preference ("always use
+tabs") or it learns something worth keeping about the project (how its tests run, where the
+config lives), it saves a note with its `remember` tool, asking first like any edit. You can
+also just say "remember that ...". Notes about the project stay with that project (a git
+worktree shares its checkout's notes); notes about you apply everywhere. Every new
+conversation starts with them. They are plain Markdown files in `~/.vesper/memory/`, outside
+the project, so they never land in a commit. `/memory` lists them and `/memory forget N`
+removes one.
+
 ### Hooks
 
 Hooks are your own commands that run around the agent's steps: format a file after every edit,
@@ -664,7 +675,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.29.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.30.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap

@@ -507,6 +507,22 @@ class Workspace:
         done = f"Edited {self.rel(p)} ({n} change{'s' if n > 1 else ''}{how})."
         return done + (check.report(new_text, self.rel(p)) if check else "")
 
+    def remember(self, note: str, scope: str = "project") -> str:
+        """Keep a note for later conversations (memory.py). Asks first, like an edit."""
+        from vesper import memory
+
+        scope = (scope or "project").strip().lower()
+        if scope not in memory.SCOPES:
+            raise ToolError("scope must be 'project' or 'user'.")
+        text = memory.clean(note)
+        if not text:
+            raise ToolError("The note is empty.")
+        path = memory.file_for(self.root, scope)
+        self._gate("edit", {"tool": "remember", "path": str(path), "scope": scope,
+                            "diff": _diff(path.name, "", f"- {text}\n")})
+        memory.add(self.root, text, scope)
+        return f"Saved to memory ({'about the user' if scope == 'user' else 'this project'}): {text}"
+
     # ---------------------------------------------------------------- tasks and the web
     def update_tasks(self, tasks: str) -> str:
         items = []
@@ -780,6 +796,11 @@ class Workspace:
             return safe(ws.update_tasks, tasks)
 
         @tool
+        def remember(note: str, scope: str = "project") -> str:
+            """Keep a lasting fact for future conversations: scope 'project' (about this project) or 'user' (a preference that holds everywhere)."""
+            return safe(ws.remember, note, scope)
+
+        @tool
         def web_fetch(url: str, offset: int = 0) -> str:
             """Read a web page as text. `offset` continues a long page."""
             return safe(ws.web_fetch, url, offset)
@@ -790,7 +811,7 @@ class Workspace:
             return safe(ws.web_search, query)
 
         builtin = [list_files, read_file, glob, grep, change_directory, write_file, edit_file,
-                   run_command, command_output, update_tasks, web_fetch, web_search]
+                   run_command, command_output, update_tasks, remember, web_fetch, web_search]
         if not ws.mcp_servers:
             return builtin
         from vesper import mcp
