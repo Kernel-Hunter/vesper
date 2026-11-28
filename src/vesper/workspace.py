@@ -140,6 +140,7 @@ class Workspace:
     stopped: bool = False  # the user stopped the turn: tools refuse to start until the next one
     mcp_servers: list = field(default_factory=list, repr=False)  # MCP servers whose tools the agent gets
     jobs: dict = field(default_factory=dict, repr=False)  # background commands: {number: _Job}
+    parent: "Workspace | None" = field(default=None, repr=False)  # a helper's: stopping the parent stops it
     _turn: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def __post_init__(self) -> None:
@@ -703,7 +704,7 @@ class Workspace:
             # One tool at a time, in the order the model asked: a model may call several at
             # once, and "go to folder" next to "edit file" must not race.
             with ws._turn:
-                if ws.stopped:
+                if ws.stopped or (ws.parent is not None and ws.parent.stopped):
                     return "Error: the user stopped this request. Do not continue; wait for the next message."
                 name, key = fn.__name__, (fn.__name__, args)
                 if key in ws._seen:  # a model going in circles: answer in a few tokens, not the whole file again

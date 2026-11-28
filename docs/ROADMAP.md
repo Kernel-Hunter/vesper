@@ -22,6 +22,7 @@ Amp, Warp, GitHub Copilot and Continue.
 - **Readable on any background** (0.24.2): Vesper asks the terminal for its background color, and a theme made for the other kind (dark text on a black terminal) is swapped for one that fits, with a one-line note. `/theme` lists only themes that suit the window. Dim text is brighter in every theme.
 - **Git safety net, part one** (0.25.0): `/git auto on` commits each turn's changes (only Vesper's files, the user's identity and hooks, never during a merge or on a detached HEAD); `/undo` takes the commit back. A conversation deleted in another window stops saving instead of printing errors.
 - **Daylight on dark terminals** (0.25.1): Daylight keeps its exact colors in a dark terminal; only the text and diff backgrounds change so they stay readable. `/theme daylight` fits either kind of window.
+- **Subagents** (0.28.0): a `subagent` tool hands a self-contained question to a helper with a fresh context and read-only tools (files and the web); only its findings come back. Up to four run at once, their steps show live, their tokens count toward the answer, and stopping the answer stops them.
 - **Diagnostics after edits** (0.27.0): after `write_file` or `edit_file`, the errors the edit introduced come back from the project's language server (basedpyright/pyright, TypeScript 7 or typescript-language-server, gopls, clangd), with errors that were already there left out. Servers already installed only; `/diagnostics` shows and toggles it.
 - **Git safety net, part two** (0.26.0): `/git worktree` gives a chat its own git worktree on a `vesper/` branch, so parallel chats in one repository never edit the same files; `/git merge` brings it back only when that is safe, `/git discard` asks before throwing it away. The desktop app has the same buttons, and shows which commit each answer made.
 - **Telegram and easy history** (0.22.0): `vesper telegram` puts Vesper in a Telegram chat, with every step, diff and approval shown live; in the terminal, Ctrl+R or `/resume` opens a searchable list of past conversations, recent ones show at start, and resuming replays the conversation on screen.
@@ -47,8 +48,12 @@ Amp, Warp, GitHub Copilot and Continue.
 
 ## Next, in order
 
-1. **Subagents.** A child agent with its own context for searches and side tasks.
+1. **Hooks.** Your own commands that run before or after a tool call (format on save, block a
+    path, notify), configured per project.
+2. **Memory across sessions.** Facts and preferences the agent keeps for a project and reads
+    at the start of each conversation.
+3. **ACP server.** Vesper as the agent inside editors that speak the Agent Client Protocol.
 
-Later: hooks, memory across sessions, a browser tool, an ACP server for editors, session
+Later: a browser tool, session
 export and sharing, a checkpoint timeline, symbol and URL mentions, keybindings and a vim
 mode, and scheduled recipes.

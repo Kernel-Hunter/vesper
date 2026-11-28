@@ -22,6 +22,7 @@ const TOOLS: Record<string, { verb: string; icon: IconName; arg: string }> = {
   run_check: { verb: 'Check', icon: 'check', arg: 'command' },
   mcp_find: { verb: 'Find tools', icon: 'plug', arg: 'query' },
   mcp_call: { verb: 'Use', icon: 'plug', arg: 'tool' },
+  subagent: { verb: 'Helper', icon: 'spark', arg: 'task' },
 }
 
 export const TOOL_VERBS: Record<string, string> = Object.fromEntries(Object.entries(TOOLS).map(([name, t]) => [name, t.verb]))
@@ -42,6 +43,10 @@ function summary(step: ToolStep): string {
     case 'web_fetch': return `${out.length.toLocaleString()} characters`
     case 'web_search': return `${lines.filter(l => /^\d+\. /.test(l)).length} results`
     case 'run_command': case 'run_check': return short(lines[0] ?? 'done', 100)
+    case 'subagent': { // the reply ends with "(helper 2: 5 steps.)"
+      const m = /\(helper \d+: (\d+) steps?\./.exec(lines[lines.length - 1] ?? '')
+      return m ? `Answered in ${m[1]} step${m[1] === '1' ? '' : 's'}` : short(lines[0] ?? 'done', 120)
+    }
     default: return short(lines[0] ?? 'done', 120)
   }
 }
@@ -166,7 +171,7 @@ type Kind = 'read' | 'search' | 'edit' | 'run' | 'check' | 'web' | 'other'
 const KIND: Record<string, Kind> = {
   read_file: 'read', list_files: 'search', glob: 'search', grep: 'search',
   edit_file: 'edit', write_file: 'edit', run_command: 'run', command_output: 'run', run_check: 'check',
-  web_fetch: 'web', web_search: 'web',
+  web_fetch: 'web', web_search: 'web', subagent: 'search',
 }
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : `${n} ${many}`)
 

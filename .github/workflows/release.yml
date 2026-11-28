@@ -89,7 +89,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Vesper ${{ github.ref_name }}" \
             --notes-file - <<'EOF'
-          Vesper desktop app: chat with your documents using OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
+          Vesper, an AI coding agent for your terminal, with a desktop app. It reads, searches and edits files and runs commands when you allow it, with OpenAI, Claude, Gemini, DeepSeek, Mistral, Groq, OpenRouter, Ollama and other models.
 
           **Install with one command (no security warning):**
 

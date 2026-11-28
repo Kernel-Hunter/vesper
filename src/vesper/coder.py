@@ -213,9 +213,9 @@ def transcript(messages: list[BaseMessage]) -> list[dict]:
     return turns
 
 
-def build_coder(llm, workspace: Workspace, middleware=()):
+def build_coder(llm, workspace: Workspace, middleware=(), extra_tools=()):
     plan = workspace.mode == "plan"
-    return create_agent(llm, tools=workspace.tools(), system_prompt=agent_system_prompt(workspace.root, plan),
+    return create_agent(llm, tools=[*workspace.tools(), *extra_tools], system_prompt=agent_system_prompt(workspace.root, plan),
                         middleware=list(middleware))
 
 
@@ -461,6 +461,9 @@ class Session:
         self._copies: list[tuple[int, str, bytes | None]] = []  # (turn, path, old bytes), newest last
         self._commits: list[dict] = []  # auto-commits this session made (gitnet), oldest first
         self.undo_note = ""
+        self._helper_tool = None                    # the subagent tool (subagents.py), made once
+        self._helper_tokens = {"input": 0, "output": 0, "cached": 0}  # spent by helpers this turn
+        self._helper_lock = threading.Lock()
         self._undone: list[str] = []                # files put back by undo, to tell the model next turn
         self._told_trimmed = False                  # the "shortened copy" notice is shown once per session
         self._told_mcp: set[str] = set()            # MCP problems already shown in this session
@@ -538,7 +541,11 @@ class Session:
         ready = tuple((s.name, len(s.tools)) for s in self.workspace.mcp_servers if s.status == "ready")
         key = (self.workspace.root, self.workspace.mode == "plan", ready, mcp.manager().version if ready else 0)
         if self._agent is None or self._agent_key != key:
-            self._agent = build_coder(self._llm, self.workspace, self._middleware())
+            if self._helper_tool is None:
+                from vesper import subagents
+
+                self._helper_tool = subagents.make_tool(self)
+            self._agent = build_coder(self._llm, self.workspace, self._middleware(), [self._helper_tool])
             self._agent_key = key
         return self._agent
 
@@ -551,7 +558,7 @@ class Session:
         from vesper import providers as prov
 
         session = self
-        names = {t.name for t in self.workspace.tools()}
+        names = {t.name for t in self.workspace.tools()} | {"subagent"}
 
         @wrap_model_call
         def guard(request, handler):
@@ -623,6 +630,20 @@ class Session:
             return session._run_check()
 
         return [guard, steering, check, *prov.agent_middleware(self._llm)]
+
+    def _add_helper_usage(self, messages: list) -> None:
+        """Tokens a helper (subagents.py) spent, added to this turn's usage."""
+        inp = out = cached = 0
+        for m in messages:
+            if isinstance(m, AIMessage):
+                usage = m.usage_metadata or {}
+                inp += usage.get("input_tokens", 0) or 0
+                out += usage.get("output_tokens", 0) or math.ceil(_size(m) / CHARS_PER_TOKEN)
+                cached += ((usage.get("input_token_details") or {}).get("cache_read", 0) or 0)
+        with self._helper_lock:
+            self._helper_tokens["input"] += inp
+            self._helper_tokens["output"] += out
+            self._helper_tokens["cached"] += cached
 
     # ---------------------------------------------------------------- checks
     def _event(self, kind: str, data: dict) -> None:
@@ -1256,6 +1277,11 @@ class Session:
             cached += ((usage.get("input_token_details") or {}).get("cache_read", 0) or 0)
             last_call = {"input": call_input, "output": call_output,
                          "estimated": "input_tokens" not in usage or "output_tokens" not in usage}
+        with self._helper_lock:  # what helpers spent on this turn
+            inp += self._helper_tokens["input"]
+            out += self._helper_tokens["output"]
+            cached += self._helper_tokens["cached"]
+            self._helper_tokens = {"input": 0, "output": 0, "cached": 0}
         self.tokens["input"] += inp
         self.tokens["output"] += out
         self.tokens["cached"] += cached

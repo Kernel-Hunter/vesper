@@ -51,15 +51,16 @@ TOOL_LABELS = {
     "list_files": "List", "read_file": "Read", "glob": "Find", "grep": "Search",
     "change_directory": "Go to", "write_file": "Write",
     "edit_file": "Edit", "run_command": "Run", "update_tasks": "Tasks", "web_fetch": "Fetch",
-    "web_search": "Search the web", "run_check": "Check",
+    "web_search": "Search the web", "run_check": "Check", "subagent": "Helper",
 }
 # The argument that says most about a tool call.
 MAIN_ARG = {
     "read_file": "path", "write_file": "path", "edit_file": "path", "list_files": "path",
     "change_directory": "path", "glob": "pattern", "grep": "pattern",
     "run_command": "command", "run_check": "command", "web_fetch": "url", "web_search": "query",
+    "subagent": "task",
 }
-READING = frozenset({"list_files", "read_file", "glob", "grep", "change_directory", "web_fetch", "web_search"})
+READING = frozenset({"list_files", "read_file", "glob", "grep", "change_directory", "web_fetch", "web_search", "subagent"})
 CHANGING = frozenset({"write_file", "edit_file"})
 LIVE_OUTPUT_LINES = 5     # lines of a running command kept on screen
 LIVE_THOUGHT_LINES = 4    # lines of the model's thinking kept on screen while it thinks
@@ -454,6 +455,10 @@ def summarize_output(name: str, output: str, ok: bool, limit: int = 6) -> Text:
         if len(body) > len(rest):
             t.append(f"\n      +{len(body) - len(rest)} more lines (ctrl+o shows all)", style=FAINT)
         return t
+    if name == "subagent" and lines:  # the reply ends with "(helper 2: 5 steps.)"
+        m = re.search(r"\(helper \d+: (\d+) steps?\.", lines[-1])
+        if m:
+            return Text(f"answered in {m.group(1)} step{'s' if m.group(1) != '1' else ''}", style=MUTED)
     if name in ("write_file", "edit_file") and len(lines) > 1:  # language server errors follow
         t = Text(lines[0][:200], style=MUTED)
         for line in lines[1:12]:

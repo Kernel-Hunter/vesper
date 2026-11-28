@@ -188,6 +188,15 @@ again, up to three times. Answers that change no files skip the check. In the de
 the Environment panel has the same setting, with a one-click suggestion. The command is
 saved for the folder in `~/.vesper/config.json`, so a cloned repository cannot set one.
 
+### Helpers for big searches
+
+The agent can hand a question to a helper: a second agent with a fresh context that can read,
+search and browse the web but not change anything. Only the helper's findings come back, so a
+search through fifty files costs the conversation a few lines instead of the files. Several
+helpers run at the same time (up to four), each one's steps show live under its line, and
+what they spend is counted in the answer's tokens and cost. Stopping the answer stops them too.
+You don't turn this on; the agent uses helpers when a question is broad, or when you ask it to.
+
 ### Type errors right after an edit
 
 When the agent writes or edits a file, Vesper asks the language server for that file what is
@@ -634,7 +643,7 @@ VESPER_PORT=8765 VESPER_TOKEN=devtoken vesper-app --serve
 npm --prefix apps/web run dev               # open http://localhost:5173/#token=devtoken
 ```
 
-Releases: push a tag such as `v0.27.0` and GitHub Actions builds, smoke-tests and publishes
+Releases: push a tag such as `v0.28.0` and GitHub Actions builds, smoke-tests and publishes
 macOS, Linux and Windows builds with checksums.
 
 ## Roadmap
