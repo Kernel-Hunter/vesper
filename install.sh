@@ -19,7 +19,6 @@
 set -euo pipefail
 
 REPO="Kernel-Hunter/vesper"
-API="https://api.github.com/repos/$REPO/releases/latest"
 ICON_URL="https://raw.githubusercontent.com/$REPO/main/packaging/icon.png"
 APP="Vesper"
 WANT_CLI=1
@@ -43,9 +42,15 @@ QUICK="--connect-timeout 20 --max-time 60 --retry 3"
 # Download a large file. A transfer slower than 10 KB/s for a minute is dropped and resumed
 # from where it stopped, up to five times, so a stalled connection never hangs the install.
 fetch() { # fetch <url> <file>
-  local tries=0
+  local tries=0 code
   rm -f "$2"
-  until curl -fL --progress-bar --connect-timeout 20 --speed-limit 10240 --speed-time 60 -C - "$1" -o "$2"; do
+  while true; do
+    curl -fL --progress-bar --connect-timeout 20 --speed-limit 10240 --speed-time 60 -C - "$1" -o "$2" && return 0
+    code=$?
+    if [ "$code" -eq 22 ]; then  # the server refused it (missing file): trying again will not help
+      echo "Could not download $1." >&2
+      exit 1
+    fi
     tries=$((tries + 1))
     if [ "$tries" -ge 5 ]; then
       echo "The download kept stalling. Check your connection and run this again." >&2
@@ -56,18 +61,27 @@ fetch() { # fetch <url> <file>
   done
 }
 
-# Print the download URL of the latest release asset whose name ends with $1.
+# The latest release's tag, read from where github.com/.../releases/latest redirects to.
+# No API call: the API limits calls without a token, and shared networks run into that.
+# Prints nothing when there is no release.
+latest_tag() {
+  curl -fsSLI $QUICK -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null \
+    | sed -n 's#.*/releases/tag/##p' || true
+}
+
+# Download URL of a file of the latest release: SHA256SUMS.txt, or the part of an app's name
+# after "Vesper-<version>-" (mac-arm64.zip, linux-x86_64.AppImage). Empty without a release.
 asset_url() {
-  curl -fsSL $QUICK -H "Accept: application/vnd.github+json" "$API" \
-    | grep -o '"browser_download_url": *"[^"]*"' \
-    | sed -E 's/.*"(https:[^"]*)"$/\1/' \
-    | grep -E -- "$1\$" \
-    | head -n 1
+  local tag name
+  tag="$(latest_tag)"
+  [ -n "$tag" ] || return 0
+  case "$1" in *.txt) name="$1" ;; *) name="Vesper-${tag#v}-$1" ;; esac
+  printf 'https://github.com/%s/releases/download/%s/%s\n' "$REPO" "$tag" "$name"
 }
 
 # Check a download against SHA256SUMS.txt from the same release.
 verify() { # verify <file> <asset name>
-  sums="$(asset_url 'SHA256SUMS\.txt')"
+  sums="$(asset_url SHA256SUMS.txt)"
   [ -n "$sums" ] || { echo "The release has no SHA256SUMS.txt; refusing to install an unchecked file." >&2; exit 1; }
   curl -fsSL $QUICK "$sums" -o "$tmp/SHA256SUMS.txt"
   want="$(grep -E " \*?$2\$" "$tmp/SHA256SUMS.txt" | head -n 1 | cut -d' ' -f1)"
@@ -87,7 +101,7 @@ install_app() {
         echo "This build is for Apple Silicon Macs (M1 or newer). Intel Macs: run from source, see the README." >&2
         exit 1
       fi
-      url="$(asset_url '-mac-arm64\.zip')"
+      url="$(asset_url mac-arm64.zip)"
       [ -n "$url" ] || { echo "Could not find the macOS download in the latest release." >&2; exit 1; }
       say "Downloading Vesper for macOS…"
       fetch "$url" "$tmp/app.zip"
@@ -107,7 +121,7 @@ install_app() {
         echo "This build is for x86_64 Linux. Other CPUs: run from source, see the README." >&2
         exit 1
       fi
-      url="$(asset_url '\.AppImage')"
+      url="$(asset_url linux-x86_64.AppImage)"
       [ -n "$url" ] || { echo "Could not find the Linux download in the latest release." >&2; exit 1; }
       say "Downloading Vesper for Linux…"
       fetch "$url" "$tmp/Vesper.AppImage"
@@ -138,12 +152,6 @@ EOF
       ;;
     esac
   }
-
-# Latest release tag, or "main" when there is no release yet.
-latest_tag() {
-  curl -fsSL $QUICK -H "Accept: application/vnd.github+json" "$API" 2>/dev/null \
-    | grep -o '"tag_name": *"[^"]*"' | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/' || true
-}
 
 install_cli() {
   uv_bin="$(command -v uv || true)"

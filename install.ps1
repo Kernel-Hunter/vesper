@@ -16,7 +16,6 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $repo = 'Kernel-Hunter/vesper'
-$api = "https://api.github.com/repos/$repo/releases/latest"
 $wantApp = $env:VESPER_APP -in @('1', 'only', 'true', 'yes')
 $wantCli = $env:VESPER_APP -ne 'only'
 function Say($text) { Write-Host "==> $text" -ForegroundColor Magenta }
@@ -42,9 +41,19 @@ function Get-File($url, $out) {
   throw 'The download kept stalling. Check your connection and run this again.'
 }
 
-function Get-Release {
-  Invoke-WebRequest -Uri $api -UseBasicParsing -TimeoutSec 60 -Headers @{ Accept = 'application/vnd.github+json' } |
-    Select-Object -ExpandProperty Content | ConvertFrom-Json
+# The latest release's tag, read from where github.com/.../releases/latest redirects to. No API
+# call: the API limits calls without a token, and shared networks run into that.
+function Get-LatestTag {
+  try {
+    $req = [System.Net.WebRequest]::Create("https://github.com/$repo/releases/latest")
+    $req.Method = 'HEAD'
+    $req.Timeout = 30000
+    $resp = $req.GetResponse()
+    $url = $resp.ResponseUri.AbsoluteUri
+    $resp.Close()
+    if ($url -match '/releases/tag/([^/?#]+)$') { return $Matches[1] }
+  } catch { }
+  return $null
 }
 
 function Install-Cli {
@@ -61,8 +70,8 @@ function Install-Cli {
     $uv = Join-Path $env:USERPROFILE '.local\bin\uv.exe'
     if (-not (Test-Path $uv)) { throw 'uv did not install. See https://docs.astral.sh/uv/ and run this again.' }
   }
-  $ref = 'main'
-  try { $ref = (Get-Release).tag_name } catch { }
+  $ref = Get-LatestTag
+  if (-not $ref) { $ref = 'main' }
   Say "Installing the vesper command ($ref)..."
   # uv reports progress on stderr; Windows PowerShell 5.1 turns that into errors under 'Stop'.
   $ErrorActionPreference = 'Continue'
@@ -76,23 +85,23 @@ function Install-Cli {
 }
 
 function Install-App {
-  $release = Get-Release
-  $asset = $release.assets | Where-Object { $_.name -like 'Vesper-*-win-*.exe' } | Select-Object -First 1
-  if (-not $asset) { throw 'Could not find the Windows installer in the latest release.' }
+  $tag = Get-LatestTag
+  if (-not $tag) { throw 'Could not find the latest release of Vesper. Check your connection and run this again.' }
+  $name = "Vesper-$($tag.TrimStart('v'))-win-x64.exe"
+  $base = "https://github.com/$repo/releases/download/$tag"
 
-  $setup = Join-Path $env:TEMP $asset.name
-  Write-Host "==> Downloading Vesper $($release.tag_name)..." -ForegroundColor Magenta
-  Get-File $asset.browser_download_url $setup
+  $setup = Join-Path $env:TEMP $name
+  Write-Host "==> Downloading Vesper $tag..." -ForegroundColor Magenta
+  Get-File "$base/$name" $setup
 
   # Check the installer against SHA256SUMS.txt from the same release.
-  $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
-  if (-not $sumsAsset) { Remove-Item $setup -Force; throw 'The release has no SHA256SUMS.txt; refusing to install an unchecked file.' }
-  $sums = (Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing -TimeoutSec 60).Content
+  try { $sums = (Invoke-WebRequest -Uri "$base/SHA256SUMS.txt" -UseBasicParsing -TimeoutSec 60).Content }
+  catch { Remove-Item $setup -Force; throw 'The release has no SHA256SUMS.txt; refusing to install an unchecked file.' }
   if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }
-  $line = ($sums -split "`n") | Where-Object { $_ -match ('\s\*?' + [regex]::Escape($asset.name) + '\s*$') } | Select-Object -First 1
+  $line = ($sums -split "`n") | Where-Object { $_ -match ('\s\*?' + [regex]::Escape($name) + '\s*$') } | Select-Object -First 1
   $want = if ($line) { ($line -split '\s+')[0].ToLower() } else { '' }
   $got = (Get-FileHash -Algorithm SHA256 -Path $setup).Hash.ToLower()
-  if (-not $want -or $want -ne $got) { Remove-Item $setup -Force; throw "Checksum mismatch for $($asset.name). Nothing was installed." }
+  if (-not $want -or $want -ne $got) { Remove-Item $setup -Force; throw "Checksum mismatch for $name. Nothing was installed." }
   Write-Host '==> Checksum OK' -ForegroundColor Magenta
 
   Write-Host '==> Installing...' -ForegroundColor Magenta
